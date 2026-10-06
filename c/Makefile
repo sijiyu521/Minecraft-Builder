@@ -1,7 +1,8 @@
 # Makefile — Minecraft Builder, C edition
 #
-# Zero third-party dependencies. On Windows the only external library is
-# winhttp, which ships with the OS; the code falls back to spawning curl.exe.
+# Zero third-party dependencies. Everything that comes from outside this source
+# tree is shipped with the operating system: winhttp for the model calls (with a
+# fallback to spawning curl.exe), and gdi32/user32 for the 3D preview window.
 #
 #   mingw32-make            build build/mb.exe
 #   mingw32-make run        build and launch the TUI
@@ -18,12 +19,21 @@ ifeq ($(origin CC),default)
 endif
 
 CFLAGS   ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes
-CPPFLAGS := -Iinclude
+# WIN32_LEAN_AND_MEAN is not optional. Without it <windows.h> drags in
+# <winsock.h>, which has its own `typedef int BOOL`; MinGW's <winhttp.h> declares
+# BOOL as well, so any translation unit that ends up with both headers fails to
+# compile with "redefinition of 'BOOL'". Defining it globally is the one place
+# that fixes every file at once. It also trims a few seconds off each compile.
+CPPFLAGS := -Iinclude -DWIN32_LEAN_AND_MEAN
 
 BUILD    := build
 BIN      := $(BUILD)/mb.exe
 TESTBIN  := $(BUILD)/mb_tests.exe
 
+# gfx3d.c knows nothing about Windows — it is a plain z-buffered rasteriser whose
+# only output is a pixel buffer. preview.c is the thin Win32 shell around it.
+# The split exists so the renderer can be exercised headlessly, both by the test
+# suite and by the --shot switch.
 SRC      := $(wildcard src/*.c)
 OBJ      := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 
@@ -49,7 +59,7 @@ TESTOBJ  := $(filter-out $(BUILD)/main.o,$(OBJ)) $(BUILD)/tests/test_core.o
 # ---------------------------------------------------------------------------
 ifeq ($(OS),Windows_NT)
   SPECS  := -specs="$(CURDIR)/tools/no-manifest.specs"
-  LDLIBS := -lwinhttp
+  LDLIBS := -lwinhttp -lgdi32 -luser32
   winpath = $(subst /,\,$(1))
   MKDIR   = cmd /c if not exist "$(call winpath,$(1))" mkdir "$(call winpath,$(1))"
   RMDIR   = cmd /c if exist "$(call winpath,$(1))" rmdir /S /Q "$(call winpath,$(1))"

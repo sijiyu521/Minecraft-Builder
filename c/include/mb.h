@@ -552,4 +552,70 @@ char* mb_render_slice(Arena* a, const MBBuildResult* r, int layer, int maxCols, 
 /* Legend shared by both views. */
 char* mb_render_legend(Arena* a, const MBBuildResult* r);
 
+/* ========================================================================== */
+/* 3D preview — software rasteriser                                           */
+/* ========================================================================== */
+/*
+ * gfx3d.c is a small z-buffered rasteriser that knows nothing about terminals or
+ * windows: it writes into a plain pixel buffer and that is all. Keeping it free
+ * of platform code means it can be driven headlessly — `mb.exe --shot out.bmp`
+ * renders one frame offscreen, which is how the preview is regression tested and
+ * how the screenshots in the README are produced.
+ *
+ * Geometry, materials and shading all come from the same catalog the terminal
+ * build uses, so a block looks the same colour in both views.
+ */
+
+typedef struct {
+    int       width, height;
+    /* 0x00RRGGBB. On a little endian machine this is byte order B,G,R,X, which
+       is exactly what a 32bpp BI_RGB DIB section wants — the buffer can be
+       handed straight to StretchDIBits without a conversion pass. */
+    uint32_t* color;
+    float*    depth;      /* 1/z; 0 means "nothing drawn here yet" */
+} MBFramebuffer;
+
+void mb_fb_init(MBFramebuffer* fb, Arena* a, int width, int height);
+/* Vertical gradient, `top` colour first. Also resets the depth buffer. */
+void mb_fb_clear(MBFramebuffer* fb, uint32_t top, uint32_t bottom);
+
+typedef struct {
+    double x, y, z;       /* world position, in blocks */
+    double yaw;           /* radians around +Y; 0 looks towards +Z */
+    double pitch;         /* radians; negative looks down */
+    double fov;           /* vertical field of view, radians */
+} MBCamera;
+
+typedef struct {
+    bool   showGrid;
+    bool   showAxes;
+    bool   autoOrbit;     /* the front end advances yaw; the renderer never does */
+    double gridExtent;    /* half width of the ground grid, in blocks */
+} MBSceneOptions;
+
+void mb_scene_default(MBSceneOptions* o);
+/* A pleasant three-quarter view, framed on the building. */
+void mb_camera_default(MBCamera* c, const MBBuildResult* r);
+/* Keep the orientation, move the camera so the whole box fits the frame. */
+void mb_camera_frame(MBCamera* c, const MBBuildResult* r);
+/* Orthonormal basis; movement keys in the front end are expressed in it. */
+void mb_camera_basis(const MBCamera* c, double* right, double* up, double* fwd);
+
+void mb_render_scene(Arena* a, MBFramebuffer* fb, const MBBuildResult* r,
+                     const MBCamera* cam, const MBSceneOptions* opt);
+
+/* BMP output: encode into a caller supplied buffer, or straight to a file.
+ * A 24bpp bottom-up BMP — the format every image viewer accepts. */
+size_t mb_bmp_size(const MBFramebuffer* fb);
+void   mb_bmp_encode(const MBFramebuffer* fb, unsigned char* out);
+bool   mb_bmp_write(const MBFramebuffer* fb, const char* path);
+
+/* -------------------------------------------------------------------------- */
+/* the windowed front end (preview.c)                                         */
+/* -------------------------------------------------------------------------- */
+/* Opens a modal Win32 window and pumps messages until it is closed. Returns
+ * false when no window could be created. On non-Windows builds this is a stub
+ * that reports failure, so callers need no platform #ifdef of their own. */
+bool mb_preview_open(const MBBuildResult* r, const char* title, bool hideConsole);
+
 #endif /* MB_H */

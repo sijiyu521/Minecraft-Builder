@@ -692,6 +692,86 @@ static void test_helpers(Arena* a)
 
 /* ========================================================================== */
 
+/*
+ * The 3D preview is headless by design: the rasteriser never touches a window
+ * and writes into a plain pixel buffer, so the software half of it can be
+ * checked the same way as everything else. What matters here is that a frame
+ * really is produced, that it is reproducible, and that the BMP the command
+ * line writes is a structurally valid file.
+ */
+static void test_preview(Arena* a, const MBBuildResult* r)
+{
+    section("3d preview and bmp output");
+
+    MBCamera cam;
+    mb_camera_default(&cam, r);
+    check("the default fov is sane", cam.fov > 0.10 && cam.fov < 3.0, "fov out of range");
+    check("the default pitch looks down a little",
+          cam.pitch < 0.0 && cam.pitch > -1.45, "pitch out of range");
+    {
+        double cx = r->size.x * 0.5, cy = r->size.y * 0.5, cz = r->size.z * 0.5;
+        double dx = cam.x - cx, dy = cam.y - cy, dz = cam.z - cz;
+        double d2 = dx * dx + dy * dy + dz * dz;
+        double need = (double)r->size.x;
+        if ((double)r->size.y > need) need = (double)r->size.y;
+        if ((double)r->size.z > need) need = (double)r->size.z;
+        check("the camera sits outside the model", d2 > need * need,
+              "the camera ended up inside the bounding box");
+    }
+
+    MBSceneOptions opt;
+    mb_scene_default(&opt);
+    check("the grid is on by default", opt.showGrid, "grid off");
+
+    enum { W = 240, H = 160 };
+    MBFramebuffer fb;
+    mb_fb_init(&fb, a, W, H);
+    mb_render_scene(a, &fb, r, &cam, &opt);
+
+    /* Collect coarse colour buckets; a frame with sky, ground and a textured
+     * building has far more than a handful. */
+    static unsigned char seen[4096];
+    memset(seen, 0, sizeof seen);
+    size_t distinct = 0;
+    long drawn = 0;
+    for (int i = 0; i < W * H; i++) {
+        uint32_t c = fb.color[i];
+        size_t key = (size_t)(((c >> 16) & 0xFFu) * 31u + ((c >> 8) & 0xFFu) * 7u
+                              + (c & 0xFFu)) & 4095u;
+        if (!seen[key]) { seen[key] = 1; distinct++; }
+        if (fb.depth[i] > 0.0) drawn++;
+    }
+    check("the frame contains many distinct colours", distinct > 64,
+          "the frame looks flat");
+    check("most of the frame is covered by geometry",
+          drawn > (long)(W * H) / 4, "almost nothing was drawn");
+
+    /* Rendering the same scene twice must give the same picture. */
+    MBFramebuffer again;
+    mb_fb_init(&again, a, W, H);
+    mb_render_scene(a, &again, r, &cam, &opt);
+    check("rendering is reproducible",
+          memcmp(fb.color, again.color, (size_t)W * H * sizeof(uint32_t)) == 0,
+          "two renders of the same camera differ");
+
+    /* The BMP writer has to produce a 24bpp file with a 4-byte row stride. */
+    size_t stride = ((size_t)W * 3u + 3u) & ~(size_t)3u;
+    expect_int("bmp size includes a padded row stride",
+               (long)mb_bmp_size(&fb), (long)(54u + stride * (size_t)H));
+
+    size_t bytes = mb_bmp_size(&fb);
+    unsigned char* out = (unsigned char*)mb_arena_alloc(a, bytes);
+    mb_bmp_encode(&fb, out);
+    expect_int("bmp starts with the 'B' magic", out[0], 'B');
+    expect_int("bmp continues with the 'M' magic", out[1], 'M');
+    expect_int("bmp header size is 54", (int)(out[10] | (out[11] << 8)), 54);
+    expect_int("bmp width", (int)(out[18] | (out[19] << 8)), W);
+    expect_int("bmp height", (int)(out[22] | (out[23] << 8)), H);
+    expect_int("bmp is 24bpp", (int)(out[28] | (out[29] << 8)), 24);
+    check("bmp rows are padded to four bytes",
+          stride % 4u == 0u && stride >= (size_t)W * 3u, "bad row stride");
+}
+
 int main(void)
 {
     Arena arena;
@@ -712,6 +792,7 @@ int main(void)
     test_llm_build(&arena);
     test_exporters(&arena, builds[0]);
     test_helpers(&arena);
+    test_preview(&arena, builds[0]);
 
     printf("\n%s  %d checks, %d failures\n",
            g_failures == 0 ? "[PASS]" : "[FAIL]", g_checks, g_failures);

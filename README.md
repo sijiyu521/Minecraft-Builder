@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-34d399.svg)](./LICENSE)
 ![C11](https://img.shields.io/badge/C-C11-00599c.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-16a34a.svg)
-![Tests](https://img.shields.io/badge/tests-243%20passing-22c55e.svg)
+![Tests](https://img.shields.io/badge/tests-258%20passing-22c55e.svg)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20compatible-7c3aed.svg)
 
 </div>
@@ -137,6 +137,57 @@ mingw32-make clean    # 清掉 build/
 - **报告**：把"这次是谁决定的、决定了什么"摊开——命中的关键词、识别到的材质、生效的修饰语，以及模型名 / endpoint / 规划耗时。
 - **导出**：`.mcfunction` / `.json` / `.csv` / `.md` 四种，Enter 写入当前目录。
 - **设置**：服务预设 / Base URL / API Key / 模型名 / 温度 / JSON 模式。
+
+---
+
+## 3D 窗口预览器
+
+终端里那版等距渲染适合快速看形，但要真正围着建筑转一圈、看清材质接缝，还是得开一个真窗口。按 `p`（或用 `mb --preview`）会弹出一个 1100×700 的 Win32 窗口：
+
+![3D 预览器](docs/preview.png)
+
+这是一个**零依赖的手写软件光栅化器**——没有 OpenGL、没有 DirectX、没有任何第三方库，只用 Windows 自带的 `gdi32` 和 `user32`。整个渲染管线（近平面裁剪、z-buffer、透视正确插值、背面剔除、体素相邻面剔除）都在 [`c/src/gfx3d.c`](c/src/gfx3d.c) 里，而且**不含任何平台代码**，所以它同时被命令行截图和测试套件直接调用。
+
+### 操作
+
+| 键 / 鼠标 | 作用 |
+|---|---|
+| `W` `A` `S` `D` | 平移视点（贴着地面走） |
+| `Q` `E` | 旋转视角 |
+| `Space` / `Shift` | 上升 / 下降 |
+| 拖动左键 | 环绕 |
+| 拖动右键 | 平移 |
+| 滚轮 | 缩放 |
+| `G` | 切换地面网格 |
+| `X` | 切换坐标轴 |
+| `O` | 自动环绕 |
+| `R` | 重置视角 |
+| `Esc` | 关闭 |
+
+### 命令行
+
+不开窗口也能出图，输出 24 位 BMP——这条路径完全是平台无关的，可以在 CI 里跑：
+
+```bash
+mb --shot build/house.bmp --size 1100x700 --prompt "现代风格两层别墅，白墙大落地窗，尺寸 15x11"
+mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt "..."   # 指定机位
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--shot <file>` | 渲染到 BMP 文件后退出 |
+| `--size WxH` | 输出分辨率，最小 64×64 |
+| `--yaw <度>` | 覆盖相机水平角（仅 `--shot` 有效） |
+| `--pitch <度>` | 覆盖相机俯仰角 |
+| `--dist <方块>` | 覆盖相机到建筑中心的距离 |
+
+### 三个值得说的取舍
+
+**方块贴图是代码生成的。** Minecraft 的官方材质有版权，本仓库**不附带任何游戏素材**。每张 16×16 贴图都是运行时按材质 id 生成的乘性噪声图（三倍频 fbm，值域 0.5–1.5），石砌有颗粒、木板有木纹、树叶有团块，方块边缘再压一圈暗描边——远看是纹理，近看是接缝。
+
+**地面用距离雾收尾，而不是无限延伸。** 地面其实是个有限的网格平面，但它会随距离逐渐混入地平线色，所以看不出来是在哪里断掉的。雾的起点是从相机到**建筑中心**的距离，不是到原点——不管相机怎么摆，雾都不会爬到模型身上。
+
+**玻璃那一趟也写深度。** 半透明必须从后往前画，但如果这趟不写 z-buffer，一条视线上的每块玻璃都会再混一次同一个色调——一面玻璃幕墙最后会黑成一块板子。让最近的那块玻璃先占住像素，幕墙就只剩一层淡蓝。
 
 ---
 
@@ -311,11 +362,13 @@ c/
 │  ├─ llm.c           # ★ 唯一联网的模块：system prompt、白名单注入、响应校验/夹紧
 │  ├─ http_winhttp.c  # WinHTTP POST（失败时回退到 spawn curl.exe）
 │  ├─ render.c        # ANSI truecolor 等距 3D 渲染 + 逐层平面图
+│  ├─ gfx3d.c         # 零依赖软件光栅化器：z-buffer、裁剪、程序化贴图、距离雾、BMP
+│  ├─ preview.c       # Win32 窗口外壳（拖动/滚轮/键盘），只负责把像素贴上去
 │  ├─ term.c          # 终端能力探测、光标/清屏、显示宽度（CJK = 2 列，ANSI 不计宽）
 │  ├─ export.c        # mcfunction / json / csv / md
 │  └─ main.c          # 模态终端界面
 ├─ tests/
-│  └─ test_core.c     # 243 项黄金数值检查
+│  └─ test_core.c     # 258 项黄金数值检查
 ├─ tools/
 │  └─ no-manifest.specs  # 带空格路径下的链接 workaround
 ├─ Makefile
@@ -398,7 +451,7 @@ mingw32-make test
 > exporters
 > helpers, urls and presets
 
-[PASS]  243 checks, 0 failures
+[PASS]  258 checks, 0 failures
 ```
 
 包括但不限于：
@@ -457,7 +510,7 @@ A **zero-dependency C11 terminal application**: prompt → voxel model → ANSI 
 - **Real LLM integration.** Any OpenAI-compatible endpoint (DeepSeek / OpenAI / Kimi / GLM / Qwen / local Ollama) — the model returns a *structured build intent* (template, style, dimensions, palette, name), and the deterministic parametric builders compute every block coordinate. A hallucinating model can only pick the wrong template; it can never emit an unbuildable structure. Every id the model returns is re-validated against the real catalog: unknown block names are dropped, out-of-range dimensions clamped, unknown templates fall back.
 - **Offline fallback.** Turn AI mode off and it runs as a deterministic local rule engine — no network, no key, no cost.
 - **Reproducible**: seeded RNG, same prompt + same seed = identical output.
-- **243-check golden-value test suite** that pins the exact block counts per template/style.
+- **258-check golden-value test suite** that pins the exact block counts per template/style.
 - **Supports Chinese keywords** for structure type, dimensions (`15x11`, `宽20 深12`), floor count and block materials.
 
 ```bash

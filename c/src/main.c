@@ -576,7 +576,7 @@ static void draw(App* app, Arena* frame, int cols, int rows)
     } else if (app->tab == TAB_EXPORT) {
         line_pad(&b, " ↑↓ 选择 · Enter 写出文件 · Tab 切换视图 · i 编辑提示词 · q 退出", cols);
     } else {
-        line_pad(&b, " i 编辑提示词 · Enter 生成 · a AI/本地 · t 测试连接 · g 换变体 · Tab 切换 · ←→↑↓ 视角 · [ ] 层 · - + 缩放 · q 退出", cols);
+        line_pad(&b, " i 编辑提示词 · Enter 生成 · a AI/本地 · t 测试连接 · g 换变体 · Tab 切换 · ←→↑↓ 视角 · [ ] 层 · - + 缩放 · p 3D 窗口 · q 退出", cols);
     }
 
     mb_sb_puts(&b, "\x1b[0m");
@@ -720,6 +720,29 @@ static void backspace_utf8(char* s)
     s[n] = '\0';
 }
 
+/*
+ * Hand the current build to the windowed preview. It is modal: the terminal
+ * keeps its raw mode and simply waits while the window pumps its own messages.
+ */
+static void open_preview(App* app)
+{
+    if (!app->result) {
+        set_error(app, "没有可预览的建筑，请先生成一次。");
+        return;
+    }
+
+    char title[256];
+    snprintf(title, sizeof(title), "%s · %d×%d×%d",
+             app->result->name, app->result->size.x,
+             app->result->size.y, app->result->size.z);
+
+    if (!mb_preview_open(app->result, title, false)) {
+        set_error(app, "无法打开 3D 预览窗口（需要 Windows 桌面环境）。");
+        return;
+    }
+    snprintf(app->status, sizeof(app->status), "已关闭 3D 预览窗口。");
+}
+
 static void handle_char(App* app, int key, Arena* model)
 {
     switch (key) {
@@ -840,6 +863,9 @@ static void handle_char(App* app, int key, Arena* model)
             mb_arena_destroy(&scratch);
             break;
         }
+        case 'p':
+            open_preview(app);
+            break;
         case '[':
             if (app->layer > 0) app->layer--;
             break;
@@ -874,8 +900,143 @@ static void handle_char(App* app, int key, Arena* model)
 /* entry point                                                                */
 /* ========================================================================== */
 
-int main(void)
+static void cli_usage(void)
 {
+    printf(
+        "Minecraft Builder — C 版\n"
+        "\n"
+        "  mb                    启动终端界面\n"
+        "  mb --preview [提示词]  直接打开 3D 预览窗口\n"
+        "  mb --shot 文件.bmp    离屏渲染一帧并写出 BMP（不需要窗口）\n"
+        "  mb --size 1280x720    指定 --shot 的输出尺寸，默认 960x600\n"
+        "  mb --yaw 45           覆盖相机水平角（度，仅对 --shot 有效）\n"
+        "  mb --pitch -28        覆盖相机俯仰角（度，仅对 --shot 有效）\n"
+        "  mb --dist 12          覆盖相机距离（方块，仅对 --shot 有效）\n"
+        "  mb --help             显示这段说明\n"
+        "\n"
+        "提示词也可以直接写在命令行上，例如：\n"
+        "  mb --preview 帮我建一座海岛小屋\n");
+}
+
+/*
+ * Headless frame. This is the path the regression tests use, and the one that
+ * produced the screenshots in the README: it renders exactly the same scene the
+ * window shows, without needing a window or a display.
+ */
+static bool cli_write_shot(Arena* arena, const MBBuildResult* r,
+                           const char* path, int w, int h,
+                           double yawDeg, double pitchDeg, double dist)
+{
+    MBFramebuffer fb;
+    mb_fb_init(&fb, arena, w, h);
+
+    MBCamera cam;
+    mb_camera_default(&cam, r);
+
+    if (yawDeg != 0.0 || pitchDeg != 0.0) {
+        const double toRad = 3.14159265358979323846 / 180.0;
+        if (yawDeg != 0.0)   cam.yaw   = yawDeg * toRad;
+        if (pitchDeg != 0.0) cam.pitch = pitchDeg * toRad;
+        mb_camera_frame(&cam, r);       /* re-fit using the new angles */
+    }
+
+    if (dist > 0.0) {
+        double px = r->size.x * 0.5, py = r->size.y * 0.5, pz = r->size.z * 0.5;
+        double dx = px - cam.x, dy = py - cam.y, dz = pz - cam.z;
+        double len = sqrt(dx * dx + dy * dy + dz * dz);
+        if (len > 1e-6) {
+            double k = dist / len;
+            cam.x = px - dx * k;
+            cam.y = py - dy * k;
+            cam.z = pz - dz * k;
+        }
+    }
+
+    MBSceneOptions opt;
+    mb_scene_default(&opt);
+
+    mb_render_scene(arena, &fb, r, &cam, &opt);
+    return mb_bmp_write(&fb, path);
+}
+
+int main(int argc, char** argv)
+{
+    /* --- command line ---------------------------------------------------- */
+    const char* prompt = NULL;
+    const char* shot   = NULL;
+    bool preview = false;
+    int  shotW = 960, shotH = 600;
+    double yawDeg = 0.0, pitchDeg = 0.0, dist = 0.0;
+
+    for (int i = 1; i < argc; i++) {
+        const char* a = argv[i];
+        if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
+            cli_usage();
+            return 0;
+        } else if (strcmp(a, "--preview") == 0) {
+            preview = true;
+        } else if (strcmp(a, "--shot") == 0 && i + 1 < argc) {
+            shot = argv[++i];
+        } else if (strcmp(a, "--yaw") == 0 && i + 1 < argc) {
+            yawDeg = atof(argv[++i]);
+        } else if (strcmp(a, "--pitch") == 0 && i + 1 < argc) {
+            pitchDeg = atof(argv[++i]);
+        } else if (strcmp(a, "--dist") == 0 && i + 1 < argc) {
+            dist = atof(argv[++i]);
+        } else if (strcmp(a, "--size") == 0 && i + 1 < argc) {
+            int w = 0, h = 0;
+            if (sscanf(argv[++i], "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) {
+                shotW = w;
+                shotH = h;
+            }
+        } else if (strcmp(a, "--prompt") == 0 && i + 1 < argc) {
+            prompt = argv[++i];
+        } else if (a[0] != '-') {
+            prompt = a;      /* a bare argument is the prompt */
+        }
+    }
+
+    if (shot || preview) {
+        Arena arena;
+        mb_arena_init(&arena);
+
+        MBGenerateInput in;
+        memset(&in, 0, sizeof(in));
+        in.prompt = (prompt && *prompt) ? prompt : DEFAULT_PROMPT;
+        in.seed   = mb_hash_string(in.prompt);
+        in.scale  = MB_SCALE_AUTO;
+
+        MBBuildResult* r = mb_generate(&arena, &in);
+        if (!r) {
+            fprintf(stderr, "构建失败：%s\n", in.prompt);
+            mb_arena_destroy(&arena);
+            return 1;
+        }
+
+        if (shot) {
+            bool ok = cli_write_shot(&arena, r, shot, shotW, shotH,
+                                     yawDeg, pitchDeg, dist);
+            printf("%s %s  (%dx%d, %s, %d 方块)\n",
+                   ok ? "已写出" : "写出失败", shot, shotW, shotH,
+                   r->name, (int)r->blockCount);
+            mb_arena_destroy(&arena);
+            return ok ? 0 : 1;
+        }
+
+        char title[256];
+        snprintf(title, sizeof(title), "%s · %d×%d×%d",
+                 r->name, r->size.x, r->size.y, r->size.z);
+
+        if (!mb_preview_open(r, title, false)) {
+            fprintf(stderr, "无法创建预览窗口（此功能需要 Windows 桌面环境）\n");
+            mb_arena_destroy(&arena);
+            return 1;
+        }
+        mb_arena_destroy(&arena);
+        return 0;
+    }
+
+    /* --- terminal interface ---------------------------------------------- */
     Arena frame, model;
     mb_arena_init(&frame);
     mb_arena_init(&model);
