@@ -52,9 +52,13 @@ typedef struct {
     char prompt[PROMPT_CAP];
     char status[STATUS_CAP];
     MBLlmConfig cfg;
-    Arena model;
-    Arena render;
+    Arena model;               /* build result */
+    Arena plan;                /* cached model plan + trace strings */
+    Arena render;              /* framebuffer scratch */
     MBBuildResult* result;
+    MBLlmPlan cachedPlan;
+    MBLlmTrace cachedTrace;
+    bool hasPlan;
     Font font;
     bool hasFont;
     int fontCodepoints[FONT_CP_CAP];
@@ -73,7 +77,6 @@ typedef struct {
     int preset;
     int exportRow;
     GuiField field;
-    bool aiEnabled;
     bool promptFocused;
     bool dropdownOpen;
     bool dragging;
@@ -199,15 +202,15 @@ static void font_add_text(GuiApp* app, const char* text)
 static void font_add_visible_text(GuiApp* app)
 {
     static const char* const labels[] = {
-        "Minecraft Builder", "桌面建造工作台", "本地规则引擎", "大模型规划", "生成建筑",
+        "Minecraft Builder", "桌面建造工作台", "大模型规划", "生成建筑",
         "换个方案", "提示词", "输入建筑描述，Enter 生成", "3D 预览", "楼层图", "生成报告",
         "导出文件", "模型设置", "尺寸", "方块总数", "种材料", "视角", "网格", "坐标轴",
         "自动旋转", "显示网格", "显示坐标轴", "自动环绕", "重置视角", "上一层", "下一层",
         "材料占比", "方案信息", "建筑类型", "风格", "体量", "关键词", "识别材质", "修饰语",
         "规划引擎", "模型", "服务预设", "服务地址", "API 密钥", "温度", "JSON 模式",
         "测试连接", "保存并测试", "选择格式并导出", "已导出", "连接成功", "正在生成...",
-        "无建筑", "暂无备注", "本地（无需联网）", "大模型", "开", "关", "取消", "AI",
-        "生成失败", "本地规则引擎（离线可用）", "请输入 API Key", "当前提示词", "主题",
+        "无建筑", "暂无备注", "大模型", "开", "关", "取消", "AI",
+        "生成失败", "请输入 API Key", "当前提示词", "主题",
         "输入 API Key", "点击填入", "点击更改", "Enter 完成",
         "从一句话开始", "场景预览", "拖动旋转 · 滚轮缩放", "场景信息", "实时状态",
         "相机距离", "材料清单", "按用量排序", "生成后显示用量", "楼层平面图",
@@ -215,14 +218,15 @@ static void font_add_visible_text(GuiApp* app)
         "选择目标文件格式", "在游戏中使用 /function 执行", "包含尺寸、坐标和方块 ID",
         "适合表格软件与备料", "适合分享或归档", "导出到当前目录", "OpenAI 兼容接口",
         "模型名称", "尚未设置", "服务地址", "坐标轴", "材料占比", "暂无数据",
-        "已启用大模型规划", "已切换到本地规则引擎", "请先填写服务地址和模型名",
-        "服务预设已更新", "模型规划完成", "建筑生成失败", "本地方案已生成",
+        "请先在模型设置中填写服务地址和模型名", "请先在模型设置中填写 API Key",
+        "服务预设已更新", "模型规划完成", "建筑生成失败",
+        "请先用大模型生成一次建筑", "用大模型规划建筑", "填写描述后点击生成建筑",
         /* strings that are composed or drawn directly rather than coming from
          * the fixed tables above; without these the built-in font rasterises
          * them as "?" boxes */
         "快捷操作", "例如：海边的日式木屋", "输入建筑描述并生成",
-        "方案决策与识别结果", "统计", "本地生成可离线使用", "保存设置",
-        "设置已保存", "设置保存失败", "AI 规划：开", "AI 规划：关",
+        "方案决策与识别结果", "统计", "保存设置",
+        "设置已保存", "设置保存失败",
         "已切换建筑变体 · 种子", "服务连接成功", "先生成一个建筑方案",
         /* punctuation that formatted strings and model output may contain */
         "× · ： ， 。 、 （ ） ？ ！ … “ ” ‘ ’ —"
@@ -447,69 +451,97 @@ static void frame_camera(GuiApp* app)
     app->sceneDirty = true;
 }
 
+/* A configured endpoint is now mandatory: generation is model-driven only.
+ * Checking here turns a first-run HTTP 401 into an actionable message. */
+static bool model_config_ready(GuiApp* app)
+{
+    if (!app->cfg.baseUrl[0] || !app->cfg.model[0]) {
+        set_status(app, "请先在模型设置中填写服务地址和模型名");
+        return false;
+    }
+    bool keyOptional = app->preset >= 0 && app->preset < MB_LLM_PRESET_COUNT
+                       && MB_LLM_PRESETS[app->preset].keyOptional;
+    if (!app->cfg.apiKey[0] && !keyOptional) {
+        set_status(app, "请先在模型设置中填写 API Key");
+        return false;
+    }
+    return true;
+}
+
+/* The trace is kept for "换个方案": it has to outlive the planning call, so
+ * its strings are copied into the plan arena. */
+static void cache_trace(GuiApp* app, const MBLlmPlanOutcome* outcome)
+{
+    memset(&app->cachedTrace, 0, sizeof(app->cachedTrace));
+    app->cachedTrace.model = mb_arena_strdup(&app->plan, outcome->result.model);
+    app->cachedTrace.endpoint = mb_arena_strdup(&app->plan, outcome->result.endpoint);
+    app->cachedTrace.latencyMs = outcome->result.latencyMs;
+    app->cachedTrace.reasoning = app->cachedPlan.notes;
+    app->cachedTrace.reasoningCount = app->cachedPlan.noteCount;
+}
+
 static void regenerate(GuiApp* app)
 {
     mb_arena_reset(&app->model);
+    mb_arena_reset(&app->plan);
     app->result = NULL;
-    if (app->aiEnabled) {
-        MBLlmPlanOutcome outcome = mb_llm_plan(&app->model, app->prompt, &app->cfg, NULL, NULL);
-        if (!outcome.ok) {
-            set_status(app, outcome.error.message);
-            return;
-        }
-        MBLlmTrace trace;
-        memset(&trace, 0, sizeof(trace));
-        trace.model = outcome.result.model;
-        trace.endpoint = outcome.result.endpoint;
-        trace.latencyMs = outcome.result.latencyMs;
-        trace.reasoning = outcome.result.plan.notes;
-        trace.reasoningCount = outcome.result.plan.noteCount;
-        app->result = mb_generate_with_plan(&app->model, app->prompt,
-            mb_hash_string(app->prompt), &outcome.result.plan, &trace,
-            NULL, NULL, MB_SCALE_AUTO);
-        if (app->result) {
-            char msg[STATUS_CAP];
-            snprintf(msg, sizeof(msg), "模型规划完成 · %s · %ld ms",
-                     outcome.result.model, outcome.result.latencyMs);
-            set_status(app, msg);
-        }
-    } else {
-        MBGenerateInput input;
-        memset(&input, 0, sizeof(input));
-        input.prompt = app->prompt;
-        input.scale = MB_SCALE_AUTO;
-        input.seed = mb_hash_string(app->prompt);
-        app->result = mb_generate(&app->model, &input);
-        set_status(app, app->result ? "本地方案已生成" : "建筑生成失败");
-    }
+    app->hasPlan = false;
     app->layer = 0;
-    if (app->result) {
-        frame_camera(app);
-        font_add_visible_text(app);
-        font_reload(app);
+    if (!model_config_ready(app)) return;
+
+    MBLlmPlanOutcome outcome = mb_llm_plan(&app->plan, app->prompt, &app->cfg, NULL, NULL);
+    if (!outcome.ok) {
+        set_status(app, outcome.error.message);
+        return;
     }
+
+    app->cachedPlan = outcome.result.plan;
+    cache_trace(app, &outcome);
+    app->hasPlan = true;
+
+    app->result = mb_generate(&app->model, app->prompt, mb_hash_string(app->prompt),
+                              &app->cachedPlan, &app->cachedTrace);
+    if (!app->result) {
+        set_status(app, "建筑生成失败");
+        return;
+    }
+
+    char msg[STATUS_CAP];
+    snprintf(msg, sizeof(msg), "模型规划完成 · %s · %ld ms",
+             outcome.result.model, outcome.result.latencyMs);
+    set_status(app, msg);
+    frame_camera(app);
+    font_add_visible_text(app);
+    font_reload(app);
 }
 
 static void regenerate_variant(GuiApp* app)
 {
+    if (!app->hasPlan) {
+        set_status(app, "请先用大模型生成一次建筑");
+        return;
+    }
+
+    /* Reuse the cached intent and only re-roll the seed: no extra tokens. */
     static unsigned variant = 1;
     ++variant;
     mb_arena_reset(&app->model);
     app->result = NULL;
-    MBGenerateInput input;
-    memset(&input, 0, sizeof(input));
-    input.prompt = app->prompt;
-    input.scale = MB_SCALE_AUTO;
-    input.seed = mb_hash_string(app->prompt) + variant * 7919u;
-    app->result = mb_generate(&app->model, &input);
-    if (app->result) {
-        char msg[STATUS_CAP];
-        snprintf(msg, sizeof(msg), "已切换建筑变体 · 种子 %u", (unsigned)input.seed);
-        set_status(app, msg);
-        frame_camera(app);
-        font_add_visible_text(app);
-        font_reload(app);
+    app->layer = 0;
+    uint32_t seed = mb_hash_string(app->prompt) + variant * 7919u;
+    app->result = mb_generate(&app->model, app->prompt, seed,
+                              &app->cachedPlan, &app->cachedTrace);
+    if (!app->result) {
+        set_status(app, "建筑生成失败");
+        return;
     }
+
+    char msg[STATUS_CAP];
+    snprintf(msg, sizeof(msg), "已切换建筑变体 · 种子 %u", (unsigned)seed);
+    set_status(app, msg);
+    frame_camera(app);
+    font_add_visible_text(app);
+    font_reload(app);
 }
 
 static void update_preview_texture(GuiApp* app, int targetW, int targetH)
@@ -622,8 +654,8 @@ static void draw_topbar(GuiApp* app, int width)
         draw_text_right(summary, (float)width - 190, 29, 16, UI_SOFT);
     }
     Rectangle engine = { (float)width - 176, 20, 150, 34 };
-    DrawRectangleRounded(engine, 0.45f, 8, app->aiEnabled ? UI_VIOLET : UI_RAISED);
-    const char* mode = app->aiEnabled ? "大模型规划" : "本地规则引擎";
+    DrawRectangleRounded(engine, 0.45f, 8, UI_VIOLET);
+    const char* mode = "大模型规划";
     Vector2 m = MeasureTextEx(GuiGetFont(), mode, 14, 1.0f);
     draw_text(mode, engine.x + (engine.width - m.x) * 0.5f, engine.y + 8, 14, UI_TEXT);
 }
@@ -659,10 +691,9 @@ static Rectangle draw_sidebar(GuiApp* app, int height)
     Rectangle actions = { panel.x + 16, panel.y + 264, (panel.width - 40) * 0.5f, 38 };
     if (GuiButton(actions, "换个方案")) regenerate_variant(app);
     actions.x += actions.width + 8;
-    if (GuiButton(actions, app->aiEnabled ? "AI 规划：开" : "AI 规划：关")) {
-        app->aiEnabled = !app->aiEnabled;
+    if (GuiButton(actions, "模型设置")) {
+        app->tab = GUI_VIEW_SETTINGS;
         app->field = FIELD_NONE;
-        set_status(app, app->aiEnabled ? "已启用大模型规划" : "已切换到本地规则引擎");
     }
 
     float keyY = panel.y + 326;
@@ -675,7 +706,7 @@ static Rectangle draw_sidebar(GuiApp* app, int height)
     DrawRectangleRounded((Rectangle){ panel.x + 12, statusY, panel.width - 24, 60 }, 0.08f, 8,
                          app->status[0] ? (app->result ? UI_RAISED : (Color){ 67, 38, 43, 255 }) : UI_BG);
     Color statusColor = app->result ? UI_SOFT : UI_RED;
-    draw_text_clipped(app->status[0] ? app->status : "本地生成可离线使用",
+    draw_text_clipped(app->status[0] ? app->status : "用大模型规划建筑",
                       panel.x + 22, statusY + 13, 13, panel.width - 44, statusColor);
     return panel;
 }
@@ -734,7 +765,7 @@ static void draw_preview(GuiApp* app, Rectangle bounds)
     DrawRectangleRounded(view, 0.06f, 8, UI_BG);
 
     if (!app->result) {
-        draw_text("输入建筑描述并生成", view.x + 24, view.y + 24, 18, UI_MUTED);
+        draw_text("填写描述后点击生成建筑", view.x + 24, view.y + 24, 18, UI_MUTED);
         return;
     }
 
@@ -849,7 +880,7 @@ static void draw_report(GuiApp* app, Rectangle bounds)
     snprintf(blocks, sizeof(blocks), "%d 方块 · %d 种材料", app->result->total,
              app->result->byMaterialCount);
     report_line("统计", blocks, x, &y, width);
-    report_line("规划引擎", report->isLlm ? "大模型" : "本地规则引擎（离线）", x, &y, width);
+    report_line("规划引擎", "大模型", x, &y, width);
     report_line("关键词", report->keywordCount ? report->keywords[0] : "无", x, &y, width);
     if (report->noteCount > 0) {
         draw_text("规划备注", x, y + 8, 14, UI_GREEN);
@@ -1001,6 +1032,7 @@ int mb_gui_run(const char* initialPrompt)
              initialPrompt && *initialPrompt ? initialPrompt :
              "现代风格两层别墅，白墙落地窗，尺寸 15x11");
     mb_arena_init(&app.model);
+    mb_arena_init(&app.plan);
     mb_arena_init(&app.render);
     mb_llm_default_config(&app.cfg);
     mb_config_load(&app.cfg);
@@ -1014,6 +1046,7 @@ int mb_gui_run(const char* initialPrompt)
     InitWindow(1100, 720, "Minecraft Builder");
     if (!IsWindowReady()) {
         mb_arena_destroy(&app.render);
+        mb_arena_destroy(&app.plan);
         mb_arena_destroy(&app.model);
         return 1;
     }
@@ -1032,7 +1065,10 @@ int mb_gui_run(const char* initialPrompt)
     for (int i = 0; i < MB_STYLE_COUNT; i++) font_add_text(&app, MB_STYLES[i].label);
     font_reload(&app);
 
-    regenerate(&app);
+    /* Do not generate on launch: a model call costs tokens and a first-run user
+     * may not have configured the endpoint yet. The empty viewport tells them
+     * what to do instead. */
+    set_status(&app, "填写描述后点击生成建筑");
     while (!WindowShouldClose()) {
         if (app.fontDirty) font_reload(&app);
         int width = GetScreenWidth();
@@ -1088,6 +1124,7 @@ int mb_gui_run(const char* initialPrompt)
     if (app.hasFont) UnloadFont(app.font);
     CloseWindow();
     mb_arena_destroy(&app.render);
+    mb_arena_destroy(&app.plan);
     mb_arena_destroy(&app.model);
     return 0;
 }

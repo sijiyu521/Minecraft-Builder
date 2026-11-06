@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-34d399.svg)](./LICENSE)
 ![C11](https://img.shields.io/badge/C-C11-00599c.svg)
 ![UI](https://img.shields.io/badge/UI-Raylib%206.2%20%2B%20Raygui-4cc38a.svg)
-![Tests](https://img.shields.io/badge/tests-277%20passing-22c55e.svg)
+![Tests](https://img.shields.io/badge/tests-849%20passing-22c55e.svg)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20compatible-7c3aed.svg)
 
 </div>
@@ -28,11 +28,13 @@
 
 默认打开 **Raylib + Raygui 桌面界面**：左侧输入建筑描述与控制生成，中间查看可旋转缩放的 3D 建筑或逐层平面图，侧栏浏览材料统计；报告、导出和模型设置也都在窗口内完成。另可用 `--tui` 启动终端界面，或用 `--shot` 无窗口渲染 BMP。
 
+**项目现在是 AI-only**：生成路径只有一条——先把提示词交给模型，再把模型返回的建筑意图交给确定性构建器。因此需要先在「模型设置」里配好 OpenAI 兼容接口、模型名和 API Key（Ollama 预设可留空 Key）；没有不依赖模型的离线生成模式。桌面端启动时 3D 视口是空的，**打开窗口本身不会调用 API**，点「生成建筑」才会发请求。
+
 **它不是一个"画得像"的演示，而是一个能真的盖出来的工具。** 导出的每一个方块坐标都在建筑包围盒内、没有重复、没有空洞，`.mcfunction` 的行数与方块数严格相等——这些都由自动化测试守着（见[开发与测试](#开发与测试)）。
 
 > ### 🧠 关于"AI"的说明
 >
-> 这个项目的"AI"是真的接大模型，不是规则引擎套壳。但它把大模型放在了一个**很窄、很安全**的位置上：
+> 这个项目的"AI"是真的接大模型，每个新方案都从一次真实的模型调用开始；但它把大模型放在了一个**很窄、很安全**的位置上：
 >
 > ```
 > 你说的话 ──▶ 大模型 ──▶ 建筑意图（JSON）──▶ 确定性体素构建器 ──▶ 方块坐标
@@ -45,7 +47,7 @@
 >
 > **支持任意 OpenAI 兼容接口**：DeepSeek / OpenAI / Kimi / 智谱 GLM / 通义千问 / Ollama 本地模型，都在内置预设里，也可以填任意自建中转地址。
 >
-> **没配 Key 也能用**：关掉 AI 模式就是纯本地确定性规则引擎，完全离线、零成本、结果可复现。
+> **没有离线兜底**：生成必须配置 OpenAI 兼容的 endpoint、模型名和 API Key（Ollama 预设可留空）。配置不可用时点「生成建筑」会直接给出错误提示，而不是退回某个本地规则引擎。
 
 ---
 
@@ -56,15 +58,16 @@
 | 🖥️ **桌面工作台** | Raylib 6.2 + Raygui 即时模式 UI；提示词、3D 视口、平面图、材料、报告、导出与模型设置集中在一个窗口 |
 | 🧩 **随仓库提供依赖** | Raylib 静态库与 Raygui 单头文件已放入 `c/vendor/`，无需额外安装 UI SDK |
 | ⌨️ **可选终端 TUI** | `mb.exe --tui` 启动 ANSI truecolor 终端界面 |
-| 🤖 **大模型规划** | 接任意 OpenAI 兼容接口，模型输出结构化建筑意图，支持一键测试连接 |
-| 🗣️ **中文提示词理解** | 建筑类型、材质风格、体量、层数、显式尺寸、具体方块名，都能从一句话里抠出来 |
+| 🤖 **大模型规划** | 每个新方案都通过一次 OpenAI 兼容接口调用产出，模型返回结构化建筑意图，支持一键测试连接 |
+| 🔑 **必须配置模型** | 需要 endpoint + 模型名 + API Key（Ollama 可留空）；没有配置就生成失败，没有不依赖模型的离线模式 |
+| 🗣️ **中文提示词理解** | 模型直接读懂一句话里的建筑类型、材质风格、体量、层数、显式尺寸和具体方块名，再落成结构化意图 |
 | 🏗️ **6 套参数化模板** | 现代别墅 / 原木小屋 / 城堡塔楼 / 树屋 / 石桥 / 城墙，每套都是真正"能住/能走"的结构 |
 | 🎨 **7 套材质风格** | 现代简约 / 中世纪石造 / 乡村木质 / 沙漠砂岩 / 奇幻魔法 / 工业冷调 / 废墟苔痕 |
 | 🛡️ **幻觉兜底** | 模型返回的每个 id 都会被校验（非法方块名丢弃、尺寸越界夹紧、未知模板回退），保证结果始终可建造 |
 | 📐 **逐层平面图** | `[` `]` 翻层，下层以暗色"幽灵"叠加，一眼看清每层的墙线与开洞位置 |
 | 🧱 **材料清单** | 每种方块的用量与占比，按用量排序——照着这个备料就行 |
-| 🔍 **生成报告** | 把"这次是谁决定的、决定了什么"完全摊开：命中的关键词、识别到的材质、生效的修饰语、模型名与规划耗时 |
-| 🌱 **种子可复现** | 同一提示词 + 同一种子 = 完全相同的结果；换个种子 = 同风格变体（不会重复扣 token） |
+| 🔍 **生成报告** | 把"这次是谁决定的、决定了什么"完全摊开：模型给出的模板、风格、尺寸、配色、命名、关键词、修饰语与备注，加上模型名与规划耗时 |
+| 🌱 **种子可复现** | 同一份模型意图 + 同一种子 = 完全相同的结果；「换个方案」复用缓存意图换种子，不重复扣 token |
 | 📦 **4 种导出** | `.mcfunction` / `.json` / 材料 `.csv` / 中文说明 `.md` |
 
 ---
@@ -83,6 +86,8 @@ mingw32-make clean       # 清掉 build/
 ```
 
 > **注意**：winlibs 工具链里**没有** `make`，只有 `mingw32-make`。直接敲 `make` 会找不到命令。
+>
+> 编译本身不需要联网或 Key。首次运行前先打开「模型设置」（GUI 页签或 TUI 的 `5`）填好 endpoint、模型名和 API Key；否则可以打开界面，但一点「生成建筑」就会报配置错误。
 
 ### 如果工具链装在带空格的路径里
 
@@ -96,11 +101,13 @@ mingw32-make clean       # 清掉 build/
 
 ## 桌面界面
 
-- 左侧输入建筑描述，点击“生成建筑”；可切换本地规划或大模型规划。
+- 左侧边栏：提示词输入框、「生成建筑」按钮（调用模型）、「换个方案」按钮（复用已缓存的模型意图换种子，不额外消耗 token），以及一个直达「模型设置」页签的快捷按钮。
+- 启动时 3D 视口是空的，打开界面本身不产生任何 API 调用；点「生成建筑」才会真正请求模型。
+- 没有可用配置（endpoint / 模型 / Key）时，点「生成建筑」会直接报错并说明缺哪一项，而不是退回本地规则。
 - 拖动 3D 视口旋转，滚轮缩放；网格、坐标轴和自动环绕可单独切换。
 - 顶部页签切换 3D 预览、楼层图、生成报告、导出文件和模型设置。
 - 模型设置支持服务预设、Base URL、API Key、模型名、温度、JSON 模式与连接测试；Base URL 和 API Key 可用 `Ctrl+V` 直接粘贴。
-- 设置点「保存设置」立即写入，退出窗口时也会自动保存到本机配置文件，下次启动继续生效。
+- 设置点「保存设置」立即写入；退出窗口时也会自动保存 endpoint、Key、模型、温度与 JSON 模式，下次启动继续生效。
 - 配置文件优先放在 `%APPDATA%\MinecraftBuilder\settings.ini`；如果该位置不可写（受限账户或安全软件会拒绝未签名程序写用户目录），会自动回退到程序目录下的 `settings.ini`。
 - 中文界面字体优先使用系统 DengXian，缺失时依次回退到 Microsoft YaHei / SimHei / SimSun；界面上新出现的文字（包括模型返回的名字与备注）会自动补齐字形。
 
@@ -111,8 +118,7 @@ mingw32-make clean       # 清掉 build/
 | 键 | 作用 |
 |---|---|
 | `i` | 编辑提示词（输入模式下 Enter 确认、Esc 取消） |
-| `Enter` | 用当前提示词生成建筑 |
-| `a` | 切换 AI 规划 / 本地规则引擎 |
+| `Enter` | 用当前提示词生成建筑（调用模型） |
 | `t` | 测试大模型连接（调 `/models` 核对模型名在不在） |
 | `g` | 换一个变体（对**已缓存的方案**重新抖种子，不重复扣 token） |
 | `Tab` / `1`-`5` | 切换标签页：3D 预览 / 平面图 / 报告 / 导出 / 设置 |
@@ -125,7 +131,7 @@ mingw32-make clean       # 清掉 build/
 
 - **3D 预览**：ANSI truecolor 逐像素等距投影渲染，玻璃半透明、光源方块自发光、带后沿明暗。
 - **平面图**：逐层俯视图，`[` `]` 翻层，下层以暗色"幽灵"叠加。
-- **报告**：把"这次是谁决定的、决定了什么"摊开——命中的关键词、识别到的材质、生效的修饰语，以及模型名 / endpoint / 规划耗时。
+- **报告**：把"这次是谁决定的、决定了什么"摊开——模型给出的模板、风格、尺寸、配色、命名、关键词、修饰语与备注，以及模型名 / endpoint / 规划耗时。
 - **导出**：`.mcfunction` / `.json` / `.csv` / `.md` 四种，Enter 写入当前目录。
 - **设置**：服务预设 / Base URL / API Key / 模型名 / 温度 / JSON 模式。
 
@@ -133,7 +139,7 @@ mingw32-make clean       # 清掉 build/
 
 ## 独立 3D 预览窗口
 
-默认桌面工作台已内置 Raylib 3D 视口。也可以用 `mb --preview` 单独打开 Win32 预览窗口，围绕建筑查看材质和接缝：
+默认桌面工作台已内置 Raylib 3D 视口。也可以用 `mb --preview` 单独打开 Win32 预览窗口，围绕建筑查看材质和接缝——它和 GUI 走同一条生成路径，同样需要先配好模型：
 
 ![3D 预览器](docs/preview.png)
 
@@ -157,7 +163,7 @@ mingw32-make clean       # 清掉 build/
 
 ### 命令行
 
-不开窗口也能出图，输出 24 位 BMP——这条路径完全是平台无关的，可以在 CI 里跑：
+不开窗口也能出图，输出 24 位 BMP——渲染这条路径是平台无关的；但 `--shot` 会先调用模型，所以同样需要可用的 endpoint 与 Key（它不是离线截图）：
 
 ```bash
 mb --shot build/house.bmp --size 1100x700 --prompt "现代风格两层别墅，白墙大落地窗，尺寸 15x11"
@@ -184,7 +190,7 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 
 ## 接入大模型
 
-在「模型设置」页填三项就能用（TUI 里是 `5` 设置页）：
+生成前必须在「模型设置」页填好这几项（TUI 里是 `5` 设置页）：
 
 | 字段 | 说明 |
 |---|---|
@@ -193,9 +199,9 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 | 模型名 | 比如 `deepseek-chat` |
 | API Key | 随请求直接发给模型服务，仅保存在本机配置文件里 |
 
-填完点「测试连接」可以先确认通不通（会调 `/models` 列出可用模型并核对你要用的那个在不在），再切回预览页打开「AI 规划」。TUI 里的对应按键是 `t` 测试、`a` 切换。
+填完点「测试连接」可以先确认通不通（会调 `/models` 列出可用模型并核对你要用的那个在不在）。之后回到界面点「生成建筑」或按 TUI 的 `Enter` 就会真正调用模型——现在没有“关闭 AI、走本地”这个开关，也没有对应的 `a` 键。
 
-这些设置优先保存在 `%APPDATA%\MinecraftBuilder\settings.ini`（Linux/macOS 为 `~/.config/minecraft-builder/settings.ini`）。如果用户目录不可写（受限账户、安全软件拦截未签名程序写用户目录时常见），会自动回退到程序所在目录的 `settings.ini`；GUI 和 TUI 共用同一份文件：窗口关闭或终端退出时自动写入，下次启动自动读回。
+这些设置优先保存在 `%APPDATA%\MinecraftBuilder\settings.ini`（Linux/macOS 为 `~/.config/minecraft-builder/settings.ini`）。如果用户目录不可写（受限账户、安全软件拦截未签名程序写用户目录时常见），会自动回退到程序所在目录的 `settings.ini`；GUI 和 TUI 共用同一份文件：窗口关闭、终端退出或点「保存设置」时自动写入 endpoint、Key、模型、温度与 JSON 模式，下次启动自动读回。
 
 Ollama 预设的 API Key 可以留空；本地跑之前需要放开跨域：
 
@@ -237,53 +243,11 @@ OLLAMA_ORIGINS='*' ollama serve
 
 Windows 上用系统自带的 **WinHTTP**；如果初始化失败，会退化成 **spawn `curl.exe`**。两条路都只发一次 POST，没有第三方依赖、没有 TLS 库。
 
-### 不用大模型的时候
+### 没有配置模型会怎样
 
-在桌面界面左侧关闭「AI 规划」（或 TUI 里按 `a`）就切回本地确定性规则引擎：同样的提示词 + 同一种子 = 完全相同的结果，零网络请求、零成本。**两条路径共用同一套构建器和导出器**，所以导出结果、材料统计、测试断言全部通用。
+生成路径只有一条：**模型意图 → 确定性构建器**。没有可用的 endpoint / 模型名 / API Key 时，GUI 的「生成建筑」、TUI 的 `Enter`，以及 `--preview` / `--shot` 都会直接报错并提示缺哪一项配置；不会退回本地规则引擎，也不会给你一个占位建筑。桌面界面本身仍可正常打开并进入「模型设置」——打开窗口不调用 API，所以不配置也能先把设置填好。
 
----
-
-## 本地规则引擎支持的提示词写法
-
-**不开 AI 模式时**，本地引擎会用下面这套规则解析你的话：**没有提到的部分会自动补默认值**，所以你写一句话就够了。
-
-> 开了 AI 模式就不用管这些写法了——直接把话说清楚，模型自己会判断。但显式写出来的数字和方块名依然是硬约束，会被强制遵守。
-
-### 建筑类型
-
-| 你会说的词 | 命中的模板 |
-|---|---|
-| 别墅、房子、住宅、现代、洋房 | 现代别墅 |
-| 小屋、木屋、乡村、原木、烟囱 | 原木小屋 |
-| 城堡、塔楼、要塞、石砖 | 城堡塔楼 |
-| 树屋、树上、森林、梦幻 | 树屋 |
-| 桥、拱桥、跨河 | 石桥 |
-| 城墙、围墙、防御、角楼 | 城墙 |
-
-### 显式尺寸
-
-```
-尺寸 15x11          宽 20              长 30
-深 12               高 24              两层 / 3 层
-```
-
-- `15x11` → 宽 15、深 11
-- 显式写出的尺寸**会覆盖**模板默认比例，并且**不受随机种子抖动影响**（你写 20 就一定是 20）
-- 只写"宽"不写"深"时，另一维按模板比例推算
-
-### 具体方块
-
-直接在句子里写方块中文名即可，例如：
-
-```
-...用白桦木板做墙，屋顶铺深色橡木，窗户用玻璃...
-```
-
-支持约 40 种方块，覆盖石材 / 木材 / 玻璃 / 自然 / 羊毛 / 装饰 / 光源七大类（见 [`c/src/materials.c`](c/src/materials.c)）。
-
-### 修饰语
-
-`两层结构`、`大面积采光`、`带烟囱`、`带护栏`、`带塔楼` 等修饰语会被识别出来，并在报告里列给你看。
+提示词没有本地解析规则：模板、风格、尺寸、配色都由模型判断。显式写出“尺寸 15x11”“用白桦木板做墙”依然最稳，因为模型会照做，而返回的尺寸与方块 id 还会再经过夹紧和白名单校验。
 
 ---
 
@@ -334,7 +298,7 @@ minecraft:birch_planks,白桦木板,493,40.4
 
 ### 4. `.md` —— 中文说明书
 
-把上面这些整理成一份可读的建造文档，包含结构摘要、材料表、提示词解析结果。
+把上面这些整理成一份可读的建造文档，包含结构摘要、材料表、模型给出的建筑意图与校验后的统计。
 
 ---
 
@@ -350,14 +314,14 @@ c/
 │  ├─ materials.c     # 40 种方块：id、中文名、分类、近似颜色、发光标记
 │  ├─ voxel.c         # 稀疏体素 Sketch + Builder（box/rect/perimeter/cylinder/ellipsoid/
 │  │                  #   gableRoof/crenellation/ringMerlons/cutOpening/glaze/normalize）
-│  ├─ structures.c    # 6 套参数化模板 + 7 套材质风格 + 关键词表
-│  ├─ planner.c       # 两条路径：本地 analyzePrompt 与模型 plan 映射，共用构建器
+│  ├─ structures.c    # 6 套参数化模板 + 7 套材质风格
+│  ├─ planner.c       # 模型意图的归一化 / 校验与生成调度（不含本地提示词解析）
 │  ├─ llm.c           # ★ 唯一联网的模块：system prompt、白名单注入、响应校验/夹紧
 │  ├─ config.c        # 本机设置持久化（%APPDATA%\MinecraftBuilder\settings.ini）
 │  ├─ http_winhttp.c  # WinHTTP POST（失败时回退到 spawn curl.exe）
 │  ├─ gui.c           # Raylib + Raygui 桌面工作台
 │  ├─ render.c        # ANSI truecolor 等距 3D 渲染 + 逐层平面图（可选 TUI）
-│  ├─ gfx3d.c         # 零依赖软件光栅化器：z-buffer、裁剪、程序化贴图、距离雾、BMP
+│  ├─ gfx3d.c         # 手写软件光栅化器：z-buffer、裁剪、程序化贴图、距离雾、BMP
 │  ├─ preview.c       # Win32 窗口外壳（拖动/滚轮/键盘），只负责把像素贴上去
 │  ├─ term.c          # 终端能力探测、光标/清屏、显示宽度（CJK = 2 列，ANSI 不计宽）
 │  ├─ export.c        # mcfunction / json / csv / md
@@ -366,7 +330,7 @@ c/
 │  ├─ raylib/         # Raylib 6.2 MinGW x64 静态库与头文件
 │  └─ raygui/         # Raygui 5.1-dev 单头文件与许可证
 ├─ tests/
-│  └─ test_core.c     # 277 项核心回归检查
+│  └─ test_core.c     # 849 项离线核心回归检查（手工构建意图，不联网）
 ├─ tools/
 │  └─ no-manifest.specs  # 带空格路径下的链接 workaround
 ├─ Makefile
@@ -377,23 +341,7 @@ c/
 
 ## 工作原理
 
-不开 AI 模式（纯本地，默认路径）：
-
-```mermaid
-flowchart LR
-    A["中文提示词"] --> B["planner.analyzePrompt<br/>关键词 / 尺寸 / 材质 / 修饰语"]
-    B --> C["解析报告<br/>MBPlannerReport"]
-    B --> D["resolveOptions<br/>模板 + 风格 + 尺寸 + 种子"]
-    D --> E["structures.Builder<br/>参数化体素建模"]
-    E --> F["sketch.normalize<br/>包围盒归零 + 排序"]
-    F --> G["MBVoxel[]"]
-    G --> H["3D 预览（ANSI truecolor）"]
-    G --> I["平面图 / 高度图"]
-    G --> J["材料统计"]
-    G --> K["导出 mcfunction / json / csv / md"]
-```
-
-开了 AI 模式：**前两步换成一次模型调用，后面完全一样。**
+新建一个方案时，流程只有一条：
 
 ```mermaid
 flowchart LR
@@ -401,24 +349,26 @@ flowchart LR
     B --> C["POST /chat/completions"]
     C --> D["extractJsonObject<br/>括号配平扫描"]
     D --> E["normalizePlan<br/>校验 id / 夹紧尺寸 / 丢弃非法方块"]
-    E --> F["mb_generate_with_plan"]
+    E --> F["mb_generate<br/>意图 → 确定性体素"]
     F --> G["同一套 Builder 与导出器"]
-    C -. 网络/鉴权/解析失败 .-> H["报错并保留上一次结果"]
+    C -. 网络/鉴权/解析失败 .-> H["报错并清空预览"]
 ```
+
+模型失败时不会产出半截体素：报错、清空当前预览，界面不崩。GUI、TUI、`--preview` 与 `--shot` 共用这条下游路径。
 
 核心设计取舍：
 
 - **稀疏体素**：用哈希表存 `(x,y,z) → Voxel`。建筑天然是空心的，密集三维数组会浪费掉大部分内存。
-- **确定性优先**：所有随机都走 `mulberry32(seed)`，代码里没有 `rand()`。这让"同种子同结果"成为可以写进测试的硬保证。
+- **确定性优先**：所有随机都走 `mulberry32(seed)`，代码里没有 `rand()`。同一份建筑意图 + 同一种子 = 完全相同的结果，这是可以写进测试的硬保证。
 - **模板而非自由生成**：6 套模板各自保证结构合理性（有地基、有门、有通路、屋顶不悬空）。自由生成的体素看起来像建筑、走进去是灾难。
 - **坐标归一化**：任何模板建完后统一把最小角挪到原点，导出时不用再担心负坐标。
-- **让模型只做选择题**：模型在"想要什么"上比规则灵活得多，在"几何是否成立"上则完全不可信。所以边界划在这里——它的输出是一份**意图**，不是坐标。
+- **让模型只做选择题**：模型在"想要什么"上比硬编码规则灵活得多，在"几何是否成立"上则完全不可信。所以边界划在这里——它的输出是一份**意图**，不是坐标。
 - **不信任返回值**：所有 id 过白名单、所有数字夹到合法区间、解析失败就抛错。宁可报错，也不要把半截幻觉渲染出来。
 
 ### 几个实现取巧的地方
 
 - **Arena 内存池**：一次 `malloc` 一大块，所有中间对象（体素、字符串、JSON 节点）从里面 bump 分配，整轮结束一次性释放。没有 `free` 乱飞，也没有泄漏可言。
-- **逐位对齐 JS 语义**：随机数用同款 `mulberry32`，字符串哈希用同款 **FNV-1a**，且哈希/取长度的单位是 **UTF-16 code unit**——因为 `String.prototype.length` / `charCodeAt` 也是这个单位。中文关键词的打分、种子推导因此和原实现逐位一致。`??` 的短路语义也被复刻：显式给出尺寸时**不消耗**随机数，否则种子序列会偏。
+- **固定随机与哈希语义**：随机数统一走 `mulberry32`，字符串哈希用 **FNV-1a**，且哈希/取长度的单位是 **UTF-16 code unit**——和原实现的种子推导逐位一致。换方案时只重播种子，不重新调用模型。
 - **显示宽度**：`display_width()` 按码点算列宽（CJK 记 2 列），并跳过 ANSI 转义序列——不然彩色输出会把整个界面撑歪。
 
 ---
@@ -430,49 +380,45 @@ cd c
 mingw32-make test
 ```
 
-`tests/test_core.c` 是一份**黄金数值**测试：把参考实现跑出来的结果当作标准答案，逐条比对。覆盖：
+`tests/test_core.c` 是一份**完全离线**的回归测试：不联网、不需要 Key，用手工构造的 build intent 直接驱动和模型相同的那条生成路径，再逐项校验结果。当前输出类似：
 
 ```
-> templates (seed 20260101)
-  . modern-house   16x13 h17   1342 blocks  9 materials
-  . cabin           9x10 h10    334 blocks  7 materials
-  . castle-tower   11x11 h24    960 blocks  8 materials
-  . treehouse      15x15 h15    870 blocks  8 materials
-  . bridge         20x5  h9     424 blocks  6 materials
-  . castle-wall    28x5  h12    942 blocks  5 materials
-
-> material styles (seed 7)
-> prompt parsing
-> determinism
+> plan-driven invariants (all structures x first/middle/last style)
+> plan fixtures (seed 20260101, pinned counts)
+> plan semantics: fallbacks, palette, scale, prompt
+> determinism and seed jitter
 > model response extraction and validation
 > model plan to building
 > exporters
 > helpers, urls and presets
 > persisted model settings
+> 3d preview and bmp output
 
-[PASS]  277 checks, 0 failures
+[PASS]  849 checks, 0 failures
 ```
 
 包括但不限于：
 
-- 每个模板 × 每个风格都能稳定产出方块，尺寸为正
+- 6 套模板 × 首/中/末 3 种风格共 18 组手工意图：都能稳定产出方块，尺寸为正
+- 一组固定意图 + 固定种子（20260101）的方块数被钉死，作为几何回归基线
 - 所有方块 id 都在材质目录里存在
 - 没有重复坐标、没有越界坐标
 - 材料统计求和 = 总方块数
 - `.mcfunction` 的 `setblock` 行数 = 方块数，且不含 `NaN`
-- 提示词解析断言（`宽20` vs `宽30` → 宽度差恰好 10；显式尺寸不被种子抖动覆盖）
-- 确定性断言（种子 42 两次结果完全一致；种子 43 结果不同）
+- **模型意图归一化/校验断言**：代码块包裹的 JSON 能解析、`width: 999` 被夹紧、未知模板/风格回退、非法方块名被丢弃、空计划/缺字段不会崩、palette 逐槽覆盖生效
+- **确定性断言**（同一意图 + 种子 42 两次完全一致；种子 43 结果不同）
 - **设置持久化断言**：模型设置写出后能原样读回，手改过的 key=value 文件（空行、注释、CRLF、未知键、越界温度）也能正确解析
-- **大模型响应映射断言**：代码块包裹的 JSON 能解析、越界尺寸被夹紧、未知模板回退、非法方块名被丢弃、UI 锁定优先于模型选择、空计划也能出结果（全部离线，不打网络）
+- **渲染器与辅助函数断言**：软件光栅器的裁剪 / z-buffer 路径、UTF-8↔UTF-16 转换、显示宽度、URL 拼接与 slugify
 
-> 真正的 HTTP 调用不在测试范围内——它需要密钥，也不该在 CI 里花钱。被测的是那份**映射逻辑**（`extractJsonObject` / `normalizePlan` / `generateWithPlan`），它是纯函数。
+> 真正的 HTTP 调用不在测试范围内——它需要密钥，也不该在 CI 里花钱。被测的是纯函数与离线路径：`extractJsonObject` / `normalizePlan` / `mb_generate`、导出器、渲染器、配置读写。
 
 ---
 
 ## 路线图
 
-- [x] ~~**零依赖 C 移植**：手写 JSON / WinHTTP / ANSI 渲染，黄金数值与原实现逐条对齐~~
+- [x] ~~**C 移植**：手写 JSON / WinHTTP / ANSI 渲染，核心数值与原实现逐条对齐~~
 - [x] ~~**LLM planner 适配器**：让模型输出结构化的建筑意图，其余管线完全复用~~
+- [x] ~~**AI-only 生成路径**：删掉本地规则引擎与提示词关键词解析，GUI / TUI 不再有 AI 与本地模式切换；每个新方案都必须先取到模型的建筑意图~~
 - [x] ~~**桌面工作台**：Raylib + Raygui 把提示词、3D 视口、平面图、材料、报告、导出与模型设置收进一个窗口；设置持久化到本机~~
 - [ ] **流式输出**：规划过程中显示模型的实时推理，而不是干等
 - [ ] **局部重生成**：选中一块区域，只让模型重做这部分
@@ -487,8 +433,8 @@ mingw32-make test
 
 Issue 和 PR 都欢迎。如果加新建筑模板，请一并：
 
-1. 在 `structures.c` 里注册（含中文名与关键词）
-2. 补一条提示词解析的断言
+1. 在 `structures.c` 里注册（中文名、id 与默认参数）
+2. 补一条基于手工 build intent 的生成断言（离线即可）
 3. 确保 `mingw32-make test` 全绿
 
 ---
@@ -505,15 +451,15 @@ Issue 和 PR 都欢迎。如果加新建筑模板，请一并：
 
 **Minecraft Builder** — describe a build in natural language, get a constructible Minecraft structure.
 
-A **C11 desktop application**: prompt → voxel model → Raylib/Raygui workbench with a 3D viewport, per-layer blueprint, material list, and one-click `.mcfunction` export. The optional terminal UI remains available with `--tui`.
+A **C11 desktop application**: prompt → structured build intent from an OpenAI-compatible model → deterministic voxels → Raylib/Raygui workbench with a 3D viewport, per-layer blueprint, material list, and one-click `.mcfunction` export. The optional terminal UI remains available with `--tui`.
 
 - **Stack**: C11, vendored Raylib 6.2 and Raygui 5.1-dev for the desktop UI, plus Windows `winhttp` (with a `curl.exe` fallback). JSON parsing and HTTP handling remain implemented in C.
-- **Real LLM integration.** Any OpenAI-compatible endpoint (DeepSeek / OpenAI / Kimi / GLM / Qwen / local Ollama) — the model returns a *structured build intent* (template, style, dimensions, palette, name), and the deterministic parametric builders compute every block coordinate. A hallucinating model can only pick the wrong template; it can never emit an unbuildable structure. Every id the model returns is re-validated against the real catalog: unknown block names are dropped, out-of-range dimensions clamped, unknown templates fall back.
-- **Offline fallback.** Turn AI mode off and it runs as a deterministic local rule engine — no network, no key, no cost.
-- **Persistent settings.** Endpoint, API key, model and sampling knobs are stored in `%APPDATA%\MinecraftBuilder\settings.ini` (falling back to `settings.ini` next to the executable when the profile is not writable) and shared by the desktop and terminal front ends.
-- **Reproducible**: seeded RNG, same prompt + same seed = identical output.
-- **277-check regression suite** that pins the exact block counts per template/style, terminal text-width behavior, and the settings round-trip.
-- **Supports Chinese keywords** for structure type, dimensions (`15x11`, `宽20 深12`), floor count and block materials.
+- **AI-only, key required.** Every new plan is produced by an OpenAI-compatible chat model (DeepSeek / OpenAI / Kimi / GLM / Qwen / local Ollama), and the endpoint, model and API key must be configured (the Ollama preset may leave the key empty). Without a usable config, generation fails with a clear error — there is no local rule-engine fallback, no model-free offline mode and no AI on/off toggle. The model returns a *structured build intent* (template, style, dimensions, palette, name), and the deterministic parametric builders compute every block coordinate. A hallucinating model can only pick the wrong template; it can never emit an unbuildable structure. Every id the model returns is re-validated against the real catalog: unknown block names are dropped, out-of-range dimensions clamped, unknown templates fall back.
+- **No cost just to open.** The desktop app starts with an empty 3D viewport; no generation request is made until you click 生成建筑. 「换个方案」reuses the cached model plan with a new seed, so it costs no extra tokens. `--preview` and `--shot` also call the model and therefore need a configured endpoint and key.
+- **Persistent settings.** Endpoint, API key, model, temperature and JSON mode are saved on exit /「保存设置」and reloaded from `%APPDATA%\MinecraftBuilder\settings.ini` (falling back to `settings.ini` next to the executable when the profile is not writable) and shared by the desktop and terminal front ends.
+- **Reproducible**: seeded RNG, same build intent + same seed = identical output; re-variation reuses the cached plan.
+- **849-check offline regression suite**: no network, no key; hand-built build intents drive the same generation path the model drives, plus model-JSON plan normalization/validation, exporters, renderer, helpers and settings round-trip.
+- **Chinese prompts** are understood directly by the model; explicit dimensions (`15x11`, `宽20 深12`), floor counts and block-material names in its intent are still validated against the catalog.
 
 ```powershell
 cd c

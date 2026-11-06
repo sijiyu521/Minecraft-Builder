@@ -21,9 +21,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 /* ========================================================================== */
 /* constants                                                                  */
 /* ========================================================================== */
+
+#ifdef _WIN32
+/*
+ * The C runtime hands `main()` an argv in the ANSI code page. A Chinese prompt
+ * then reaches the JSON body as GBK bytes, i.e. invalid UTF-8, and the model
+ * endpoint rejects the request. Rebuild argv from the UTF-16 command line so
+ * `mb --shot ... "中文提示词"` works; the scratch arena lives for the process.
+ */
+static void argv_as_utf8(Arena* a, int* argc, char*** argv)
+{
+    int wargc = 0;
+    WCHAR** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv || wargc <= 0) return;
+
+    char** out = (char**)mb_arena_alloc(a, (size_t)(wargc + 1) * sizeof(char*));
+    if (!out) {
+        LocalFree(wargv);
+        return;
+    }
+    for (int i = 0; i < wargc; i++) {
+        out[i] = mb_utf8_from_u16(a, (const U16*)wargv[i],
+                                  mb_u16_len_buf((const U16*)wargv[i]));
+    }
+    out[wargc] = NULL;
+    LocalFree(wargv);
+    *argc = wargc;
+    *argv = out;
+}
+#endif
 
 enum { TAB_3D = 0, TAB_PLAN, TAB_REPORT, TAB_EXPORT, TAB_SETTINGS, TAB_COUNT };
 
@@ -69,18 +103,18 @@ typedef struct {
     int    layer;
     int    variant;
 
-    bool   aiEnabled;
     bool   editing;
-
-    const char* structureId;   /* NULL = let the planner decide */
-    const char* styleId;
-    MBScaleId   scale;
 
     int settingsRow;
     int exportRow;
 
     uint32_t seed;
     MBBuildResult* result;     /* lives in the model arena */
+
+    Arena       planArena;     /* cached plan/trace strings survive variants */
+    MBLlmPlan   plan;
+    MBLlmTrace  trace;
+    bool        hasPlan;
 } App;
 
 /* ========================================================================== */
@@ -159,60 +193,85 @@ static uint32_t derive_seed(const App* app)
     return (mb_hash_string(app->prompt) + (uint32_t)app->variant * 7919u);
 }
 
-static void do_local(App* app, Arena* model)
+static bool ai_configured(const App* app)
 {
-    MBGenerateInput in;
-    memset(&in, 0, sizeof(in));
-    in.prompt = app->prompt;
-    in.structureId = app->structureId;
-    in.styleId = app->styleId;
-    in.scale = app->scale;
-    in.seed = app->seed;
-
-    app->result = mb_generate(model, &in);
+    if (!app->cfg.baseUrl[0] || !app->cfg.model[0]) return false;
+    bool keyOptional = app->preset >= 0 && app->preset < MB_LLM_PRESET_COUNT
+                       && MB_LLM_PRESETS[app->preset].keyOptional;
+    return app->cfg.apiKey[0] != '\0' || keyOptional;
 }
 
 static void do_ai(App* app, Arena* model)
 {
-    MBLlmPlanOutcome outcome = mb_llm_plan(model, app->prompt, &app->cfg,
-                                           app->structureId, app->styleId);
+    if (!ai_configured(app)) {
+        set_error(app, "请先在设置页填写服务地址、模型名与 API Key（Ollama 可留空 Key）");
+        app->result = NULL;
+        app->hasPlan = false;
+        return;
+    }
+
+    mb_arena_reset(&app->planArena);
+    MBLlmPlanOutcome outcome = mb_llm_plan(&app->planArena, app->prompt, &app->cfg,
+                                           NULL, NULL);
     if (!outcome.ok) {
         set_error(app, "[%s] %s", mb_llm_error_kind_name(outcome.error.kind),
                   outcome.error.message);
         app->result = NULL;
+        app->hasPlan = false;
         return;
     }
 
-    MBLlmTrace trace;
-    memset(&trace, 0, sizeof(trace));
-    trace.model = outcome.result.model;
-    trace.endpoint = outcome.result.endpoint;
-    trace.latencyMs = outcome.result.latencyMs;
-    trace.reasoning = outcome.result.plan.notes;
-    trace.reasoningCount = outcome.result.plan.noteCount;
+    app->plan = outcome.result.plan;
+    memset(&app->trace, 0, sizeof(app->trace));
+    app->trace.model = mb_arena_strdup(&app->planArena, outcome.result.model);
+    app->trace.endpoint = mb_arena_strdup(&app->planArena, outcome.result.endpoint);
+    app->trace.latencyMs = outcome.result.latencyMs;
+    app->trace.reasoning = app->plan.notes;
+    app->trace.reasoningCount = app->plan.noteCount;
+    app->hasPlan = true;
 
-    app->result = mb_generate_with_plan(model, app->prompt, app->seed,
-                                        &outcome.result.plan, &trace,
-                                        app->structureId, app->styleId, app->scale);
+    app->result = mb_generate(model, app->prompt, app->seed, &app->plan, &app->trace);
 
-    snprintf(app->status, sizeof(app->status),
-             "模型规划完成：%s · %ld ms", outcome.result.model, outcome.result.latencyMs);
-    app->error[0] = '\0';
+    if (app->result) {
+        snprintf(app->status, sizeof(app->status),
+                 "模型规划完成：%s · %ld ms", outcome.result.model, outcome.result.latencyMs);
+        app->error[0] = '\0';
+    } else {
+        set_error(app, "建筑生成失败");
+    }
 }
 
 static void regenerate(App* app, Arena* model)
 {
     mb_arena_reset(model);
+    mb_arena_reset(&app->planArena);
+    app->result = NULL;
+    app->hasPlan = false;
+    app->seed = derive_seed(app);
+    app->layer = 0;
+    do_ai(app, model);
+}
+
+/* "换一个变体" reuses the cached model intent and only re-rolls the seed, so it
+ * costs no extra tokens. */
+static void regenerate_variant(App* app, Arena* model)
+{
+    if (!app->hasPlan) {
+        set_error(app, "请先用大模型生成一次建筑");
+        return;
+    }
+    app->variant++;
+    mb_arena_reset(model);
     app->result = NULL;
     app->seed = derive_seed(app);
     app->layer = 0;
-
-    if (app->aiEnabled) {
-        do_ai(app, model);
-    } else {
-        do_local(app, model);
-        app->error[0] = '\0';
+    app->result = mb_generate(model, app->prompt, app->seed, &app->plan, &app->trace);
+    if (!app->result) {
+        set_error(app, "建筑生成失败");
+        return;
     }
+    snprintf(app->status, sizeof(app->status), "已换一个变体（种子 %u）", (unsigned)app->seed);
+    app->error[0] = '\0';
 }
 
 /* ========================================================================== */
@@ -462,20 +521,11 @@ static void draw_body_report(SBuf* b, App* app, Arena* frame, int cols, int body
     RPT("方块总数", "%d 块", r->total);
     RPT("材质种类", "%d 种", r->byMaterialCount);
 
-    if (p->isLlm) {
-        SECTION("规划引擎");
-        RPT("模式", "%s", "大模型");
-        RPT("模型", "%s", p->hasLlmUser ? p->llm.model : "未知");
-        RPT("接口", "%s", p->hasLlmUser ? p->llm.endpoint : "未知");
-        for (int i = 0; i < p->noteCount && used < bodyRows; i++) {
-            RPT("备注", "%s", p->notes[i]);
-        }
-    } else {
-        SECTION("规划引擎");
-        RPT("模式", "%s", "本地规则引擎（确定性 · 离线）");
-        for (int i = 0; i < p->noteCount && used < bodyRows; i++) {
-            RPT("备注", "%s", p->notes[i]);
-        }
+    SECTION("规划引擎");
+    RPT("模型", "%s", p->hasLlmUser ? p->llm.model : "未知");
+    RPT("接口", "%s", p->hasLlmUser ? p->llm.endpoint : "未知");
+    for (int i = 0; i < p->noteCount && used < bodyRows; i++) {
+        RPT("备注", "%s", p->notes[i]);
     }
 #undef RPT
 #undef RPTV
@@ -559,7 +609,7 @@ static void draw_body_settings(SBuf* b, App* app, int cols, int bodyRows)
 {
     int used = 0;
     card_title(b, "大模型接入", cols); used++;
-    card_kv(b, "提示", "填好地址与模型名后，按 1 回到预览并用 a 切到 AI 规划。", cols); used++;
+    card_kv(b, "提示", "填好地址与模型名后，按 1 回到 3D 预览，再按 Enter 生成。", cols); used++;
     card_blank(b, cols); used++;
 
     for (int i = 0; i < SET_COUNT && used < bodyRows; i++) {
@@ -627,12 +677,8 @@ static void draw(App* app, Arena* frame, int cols, int rows)
         snprintf(title, sizeof(title), "  \xe2\x9b\x8f  Minecraft Builder");
 
         char engine[192];
-        if (app->aiEnabled) {
-            snprintf(engine, sizeof(engine), " 大模型 · %s ",
-                     app->cfg.model[0] ? app->cfg.model : "未配置");
-        } else {
-            snprintf(engine, sizeof(engine), " 本地规则引擎 ");
-        }
+        snprintf(engine, sizeof(engine), " 大模型 · %s ",
+                 app->cfg.model[0] ? app->cfg.model : "未配置");
 
         col_bg(&b, P_CARD);
         col_fg(&b, P_ACCENT);
@@ -645,16 +691,10 @@ static void draw(App* app, Arena* frame, int cols, int rows)
         int engineW = display_width(engine);
         for (int i = usedW; i < cols - engineW - 2; i++) mb_sb_putc(&b, ' ');
 
-        if (app->aiEnabled) {
-            col_bg(&b, P_ACCENT2);
-            col_fg(&b, P_INK);
-            mb_sb_puts(&b, "\x1b[1m");
-            mb_sb_puts(&b, engine);
-        } else {
-            col_bg(&b, P_PANEL);
-            col_fg(&b, P_SOFT);
-            mb_sb_puts(&b, engine);
-        }
+        col_bg(&b, P_ACCENT2);
+        col_fg(&b, P_INK);
+        mb_sb_puts(&b, "\x1b[1m");
+        mb_sb_puts(&b, engine);
         col_reset(&b);
         mb_sb_puts(&b, "\x1b[K\n");
 
@@ -736,7 +776,7 @@ static void draw(App* app, Arena* frame, int cols, int rows)
         } else if (app->tab == TAB_PLAN) {
             hint = " [ ] 切换楼层 · ←→↑↓ 视角 · - + 缩放 · Tab 切换视图 · i 编辑提示词 · Enter 生成 · q 退出";
         } else {
-            hint = " i 编辑提示词 · Enter 生成 · a AI/本地 · g 换变体 · t 测试连接 · Tab 切换 · ←→↑↓ 视角 · p 3D 窗口 · q 退出";
+            hint = " i 编辑提示词 · Enter 生成（调用模型） · g 换变体 · t 测试连接 · Tab 切换 · ←→↑↓ 视角 · p 3D 窗口 · q 退出";
         }
         col_fg(&b, P_DIM);
         mb_sb_puts(&b, hint);
@@ -1010,16 +1050,8 @@ static void handle_char(App* app, int key, Arena* model)
             app->status[0] = '\0';
             app->error[0] = '\0';
             break;
-        case 'a':
-            app->aiEnabled = !app->aiEnabled;
-            snprintf(app->status, sizeof(app->status), "已切换到%s",
-                     app->aiEnabled ? "大模型规划（需要网络与 API Key）" : "本地规则引擎（离线可用）");
-            regenerate(app, model);
-            break;
         case 'g':
-            app->variant++;
-            regenerate(app, model);
-            snprintf(app->status, sizeof(app->status), "已换一个变体（种子 %u）", (unsigned)app->seed);
+            regenerate_variant(app, model);
             break;
         case 't': {
             Arena scratch;
@@ -1072,16 +1104,58 @@ static void cli_usage(void)
         "\n"
         "  mb                    启动桌面图形界面\n"
         "  mb --tui              启动终端界面\n"
-        "  mb --preview [提示词]  直接打开 3D 预览窗口\n"
-        "  mb --shot 文件.bmp    离屏渲染一帧并写出 BMP（不需要窗口）\n"
+        "  mb --preview [提示词]  调用模型规划并打开 3D 预览窗口\n"
+        "  mb --shot 文件.bmp    调用模型规划、离屏渲染一帧并写出 BMP\n"
         "  mb --size 1280x720    指定 --shot 的输出尺寸，默认 960x600\n"
         "  mb --yaw 45           覆盖相机水平角（度，仅对 --shot 有效）\n"
         "  mb --pitch -28        覆盖相机俯仰角（度，仅对 --shot 有效）\n"
         "  mb --dist 12          覆盖相机距离（方块，仅对 --shot 有效）\n"
         "  mb --help             显示这段说明\n"
         "\n"
+        "--shot / --preview 也需要模型配置：先在桌面版的「模型设置」里填好\n"
+        "服务地址、模型名和 API Key（或 Ollama 本地服务），配置会自动读取。\n"
+        "\n"
         "提示词也可以直接写在命令行上，例如：\n"
         "  mb --preview 帮我建一座海岛小屋\n");
+}
+
+/*
+ * Headless generation goes through the same model path as the GUI: load the
+ * saved configuration, ask the model for a build intent, then hand that intent
+ * to the deterministic builders. --shot/--preview are therefore network paths.
+ */
+static MBBuildResult* cli_generate(Arena* a, const char* prompt)
+{
+    MBLlmConfig cfg;
+    mb_llm_default_config(&cfg);
+    mb_config_load(&cfg);
+
+    if (!cfg.baseUrl[0] || !cfg.model[0]) {
+        fprintf(stderr,
+                "没有可用的模型配置：请先启动 mb，在「模型设置」里填写服务地址、"
+                "模型名和 API Key 并保存（Ollama 本地服务可留空 Key），再重试。\n");
+        return NULL;
+    }
+
+    MBLlmPlanOutcome outcome = mb_llm_plan(a, prompt, &cfg, NULL, NULL);
+    if (!outcome.ok) {
+        fprintf(stderr, "模型规划失败：[%s] %s\n",
+                mb_llm_error_kind_name(outcome.error.kind), outcome.error.message);
+        return NULL;
+    }
+
+    MBLlmTrace trace;
+    memset(&trace, 0, sizeof(trace));
+    trace.model = mb_arena_strdup(a, outcome.result.model);
+    trace.endpoint = mb_arena_strdup(a, outcome.result.endpoint);
+    trace.latencyMs = outcome.result.latencyMs;
+    trace.reasoning = outcome.result.plan.notes;
+    trace.reasoningCount = outcome.result.plan.noteCount;
+
+    MBBuildResult* r = mb_generate(a, prompt, mb_hash_string(prompt),
+                                   &outcome.result.plan, &trace);
+    if (!r) fprintf(stderr, "建筑生成失败。\n");
+    return r;
 }
 
 /*
@@ -1127,6 +1201,12 @@ static bool cli_write_shot(Arena* arena, const MBBuildResult* r,
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    Arena cliArena;
+    mb_arena_init(&cliArena);
+    argv_as_utf8(&cliArena, &argc, &argv);
+#endif
+
     /* --- command line ---------------------------------------------------- */
     const char* prompt = NULL;
     const char* shot   = NULL;
@@ -1169,15 +1249,9 @@ int main(int argc, char** argv)
         Arena arena;
         mb_arena_init(&arena);
 
-        MBGenerateInput in;
-        memset(&in, 0, sizeof(in));
-        in.prompt = (prompt && *prompt) ? prompt : DEFAULT_PROMPT;
-        in.seed   = mb_hash_string(in.prompt);
-        in.scale  = MB_SCALE_AUTO;
-
-        MBBuildResult* r = mb_generate(&arena, &in);
+        const char* text = (prompt && *prompt) ? prompt : DEFAULT_PROMPT;
+        MBBuildResult* r = cli_generate(&arena, text);
         if (!r) {
-            fprintf(stderr, "构建失败：%s\n", in.prompt);
             mb_arena_destroy(&arena);
             return 1;
         }
@@ -1226,14 +1300,15 @@ int main(int argc, char** argv)
             break;
         }
     }
+    mb_arena_init(&app.planArena);
     mb_view_default(&app.view);
-    app.aiEnabled = false;
     app.tab = TAB_3D;
-    app.scale = MB_SCALE_AUTO;
 
     mb_term_init();
 
-    regenerate(&app, &model);
+    /* No model call on launch: press Enter when the prompt is ready. */
+    snprintf(app.status, sizeof(app.status),
+             "在设置页(5)配置模型后按 Enter 生成（需要网络与 API Key）");
 
     for (;;) {
         int cols, rows;
@@ -1253,6 +1328,7 @@ int main(int argc, char** argv)
 
     mb_config_save(&app.cfg);
     mb_term_restore();
+    mb_arena_destroy(&app.planArena);
     mb_arena_destroy(&model);
     mb_arena_destroy(&frame);
     return 0;

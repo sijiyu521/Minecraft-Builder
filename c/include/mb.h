@@ -333,7 +333,7 @@ typedef struct {
     int          modifierCount;
     const char** notes;
     int          noteCount;
-    bool         isLlm;      /* false = local rule engine */
+    bool         isLlm;      /* always true now; kept for the JSON report schema */
     bool         hasLlmUser; /* true when MBLlmTrace below is meaningful */
     MBLlmTrace   llm;
 } MBPlannerReport;
@@ -355,21 +355,13 @@ typedef struct {
 /* ========================================================================== */
 /* planner                                                                    */
 /* ========================================================================== */
-
-typedef enum {
-    MB_SCALE_AUTO,
-    MB_SCALE_SMALL,
-    MB_SCALE_MEDIUM,
-    MB_SCALE_LARGE
-} MBScaleId;
-
-typedef struct {
-    const char* prompt;
-    const char* structureId;   /* NULL or "auto" means infer */
-    const char* styleId;
-    MBScaleId   scale;
-    uint32_t    seed;
-} MBGenerateInput;
+/*
+ * There is exactly one generation path now: the model returns an MBLlmPlan
+ * (a build *intent*, never coordinates), llm.c validates every id and clamps
+ * every number, and mb_generate() turns that intent into voxels with the same
+ * deterministic parametric builders. The old keyword-based local rule engine
+ * is gone, so a configured endpoint is required for every generation.
+ */
 
 typedef struct {
     const char* structure;
@@ -392,12 +384,8 @@ typedef struct {
     const char** notes;      int noteCount;
 } MBLlmPlan;
 
-MBBuildResult* mb_generate(Arena* a, const MBGenerateInput* in);
-
-MBBuildResult* mb_generate_with_plan(Arena* a, const char* prompt, uint32_t seed,
-                                     const MBLlmPlan* plan, const MBLlmTrace* trace,
-                                     const char* structureId, const char* styleId,
-                                     MBScaleId scale);
+MBBuildResult* mb_generate(Arena* a, const char* prompt, uint32_t seed,
+                           const MBLlmPlan* plan, const MBLlmTrace* trace);
 
 /* Catalog injected into the model prompt — the choices it may pick from. */
 typedef struct {
@@ -410,9 +398,6 @@ typedef struct {
     const char* id;
     const char* label;
 } MBStyleChoice;
-
-const char* mb_scale_label(MBScaleId s);
-const char* mb_scale_label_auto(MBScaleId s);
 
 /* ========================================================================== */
 /* LLM client                                                                 */

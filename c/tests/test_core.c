@@ -1,17 +1,23 @@
 /*
- * test_core.c — golden-value regression suite for the C edition.
+ * test_core.c - offline regression suite for the C edition.
  *
  *     mingw32-make test
  *
- * The numbers printed in GOLDEN below were recorded from the original reference
- * implementation of the engine. Pinning them here turns this suite into a
- * regression and cross-implementation check: the deterministic geometry, the
- * prompt parsing, the model response validation and the four exporters all have
- * to reproduce the recorded values exactly, down to the block count.
+ * The local rule engine is gone. Generation now starts from a validated model
+ * intent (MBLlmPlan) and goes through the single entry point
  *
- * No network access is required. Every LLM code path exercised here works on a
- * canned model response, so `mingw32-make test` is safe to run offline and in
- * CI.
+ *     mb_generate(arena, prompt, seed, plan, trace)
+ *
+ * so the tests below drive that exact path with hand-built plans and with
+ * canned model JSON. No network access and no API key are required: the LLM
+ * HTTP client is never called, only its pure validation helpers.
+ *
+ * The pinned fixture table at the bottom of the fixture section records the
+ * block counts the deterministic builders produce for the default plans. The
+ * plan-driven invariant section covers every structure id against the first,
+ * middle and last style in the catalog. The old prompt-parsing and local-rule
+ * golden tables are intentionally absent: they tested a code path that no
+ * longer exists and their numbers belong to different geometry.
  *
  * Output is deliberately ASCII-only: PowerShell mangles UTF-8 on a piped
  * console, and a readable PASS/FAIL line is worth more than pretty labels.
@@ -95,6 +101,7 @@ static int count_rows(const char* text)
  * raw struct bytes would be wrong: MBVoxel has padding. */
 static bool blocks_equal(const MBBuildResult* a, const MBBuildResult* b)
 {
+    if (!a || !b) return false;
     if (a->blockCount != b->blockCount) return false;
     for (size_t i = 0; i < a->blockCount; i++) {
         const MBVoxel* x = &a->blocks[i];
@@ -107,6 +114,7 @@ static bool blocks_equal(const MBBuildResult* a, const MBBuildResult* b)
 
 static bool build_uses_material(const MBBuildResult* r, const char* material)
 {
+    if (!r || !r->blocks) return false;
     for (size_t i = 0; i < r->blockCount; i++) {
         if (strcmp(r->blocks[i].material, material) == 0) return true;
     }
@@ -121,7 +129,40 @@ static int cmp_u64(const void* a, const void* b)
 }
 
 /* ========================================================================== */
-/* structural validation — the invariants every build must satisfy            */
+/* plan helpers                                                               */
+/* ========================================================================== */
+
+/*
+ * The old suite built MBBuildOptions directly. Every test now goes through the
+ * real public entry point instead: a zeroed MBLlmPlan is the model's "empty
+ * intent" and the seed supplies the same +/-1 footprint jitter the app uses.
+ */
+static MBLlmPlan plan_make(const char* structure, const char* style,
+                           int width, int depth, int height, int floors,
+                           const char* name)
+{
+    MBLlmPlan p;
+    memset(&p, 0, sizeof p);
+    p.structure = structure;
+    p.style = style;
+    p.scale = "medium";
+    p.width = width;
+    p.depth = depth;
+    p.height = height;
+    p.floors = floors;
+    p.name = name;
+    return p;
+}
+
+static MBLlmPlan plan_from_structure(const MBStructure* st, const char* style,
+                                     const char* name)
+{
+    return plan_make(st->id, style, st->defWidth, st->defDepth,
+                     st->defHeight, st->defFloors, name);
+}
+
+/* ========================================================================== */
+/* structural validation - the invariants every build must satisfy            */
 /* ========================================================================== */
 
 static void validate_build(Arena* arena, const char* label, const MBBuildResult* r)
@@ -131,23 +172,28 @@ static void validate_build(Arena* arena, const char* label, const MBBuildResult*
     check(label, r != NULL, "mb_generate returned NULL");
     if (!r) return;
 
+    check(label, r->report.isLlm, "report.isLlm is false");
+    check(label, r->name != NULL && r->name[0] != '\0', "empty build name");
+    check(label, r->summary != NULL && r->summary[0] != '\0', "empty build summary");
+
     expect_int(label, (long)r->blockCount > 0, 1);
     check(label, r->size.x > 0 && r->size.y > 0 && r->size.z > 0,
           "bounding box has a non-positive edge");
-    if (r->blockCount == 0) return;
+    check(label, r->blocks != NULL, "block array is NULL");
+    if (r->blockCount == 0 || !r->blocks) return;
 
     uint64_t* keys = mb_arena_alloc(arena, sizeof(uint64_t) * r->blockCount);
 
     bool material_known = true, in_range = true, no_nan = true;
     for (size_t i = 0; i < r->blockCount; i++) {
         const MBVoxel* v = &r->blocks[i];
-        if (!mb_material_known(v->material)) material_known = false;
+        if (!v->material || !mb_material_known(v->material)) material_known = false;
         if (v->x < 0 || v->y < 0 || v->z < 0 ||
             v->x >= r->size.x || v->y >= r->size.y || v->z >= r->size.z) {
             in_range = false;
         }
         keys[i] = ((uint64_t)v->x << 42) | ((uint64_t)v->y << 21) | (uint64_t)v->z;
-        if (strstr(v->material, "NaN") != NULL) no_nan = false;
+        if (v->material && strstr(v->material, "NaN") != NULL) no_nan = false;
     }
     check(label, material_known, "a voxel uses an unknown material id");
     check(label, in_range, "a voxel sits outside the reported bounding box");
@@ -168,6 +214,7 @@ static void validate_build(Arena* arena, const char* label, const MBBuildResult*
     }
     check(label, summed == r->total, "byMaterial counts do not add up to total");
     expect_int(label, r->total, (long)r->blockCount);
+    expect_int(label, r->paletteCount, r->byMaterialCount);
     check(label, palette_known, "the material palette holds an unknown id");
 
     for (int i = 0; i < r->paletteCount; i++) {
@@ -180,171 +227,212 @@ static void validate_build(Arena* arena, const char* label, const MBBuildResult*
 }
 
 /* ========================================================================== */
-/* golden table                                                               */
+/* pinned plan fixtures                                                       */
 /* ========================================================================== */
 
 /*
- * generateBuild({ prompt: <first keyword>, structureId: <id>, seed: 20260101 })
- * reproduced below as recorded values. `w`/`d`/`h` are the bounding box, which
- * includes decorative overhang (roof eaves, corner towers), so it is not always
- * the requested footprint.
+ * These are the default structure plans, generated through mb_generate() with
+ * seed 20260101 (the same seed the old golden section used). The builders are
+ * deterministic, so the bounding box, block count and material count are
+ * stable and worth pinning: any accidental geometry change shows up here.
+ *
+ *   plan defaults for each structure, style cycled for palette coverage.
  */
 typedef struct {
-    const char* id;
-    int width, depth, height;
+    const char* structure;
+    const char* style;
+    int width, depth, height, floors;
+    uint32_t seed;
+    int sizeX, sizeZ, sizeY;
     int blocks;
     int materials;
-} Golden;
+} PlanFixture;
 
-static const Golden GOLDEN[] = {
-    { "modern-house", 16, 13, 17, 1342, 9 },
-    { "cabin",         9, 10, 10,  334, 7 },
-    { "castle-tower", 11, 11, 24,  960, 8 },
-    { "treehouse",    15, 15, 15,  870, 8 },
-    { "bridge",       20,  5,  9,  424, 6 },
-    { "castle-wall",  28,  5, 12,  942, 5 },
+static const PlanFixture FIXTURES[] = {
+    { "modern-house", "modern",     15, 11,  5, 2, 20260101u, 17, 13, 17, 1416, 9 },
+    { "cabin",        "rustic",     11,  9,  4, 1, 20260101u, 13, 12, 12,  591, 8 },
+    { "castle-tower", "medieval",   11, 11, 20, 0, 20260101u, 11, 11, 24,  960, 7 },
+    { "treehouse",    "fantasy",    13, 13,  6, 1, 20260101u, 15, 15, 15,  870, 7 },
+    { "bridge",       "industrial", 21,  5,  0, 0, 20260101u, 21,  5,  9,  438, 5 },
+    { "castle-wall",  "mossy",      25,  3,  7, 0, 20260101u, 29,  5, 12,  971, 4 },
 };
 
-#define GOLDEN_COUNT ((int)(sizeof(GOLDEN) / sizeof(GOLDEN[0])))
+#define FIXTURE_COUNT ((int)(sizeof(FIXTURES) / sizeof(FIXTURES[0])))
 
 /* ========================================================================== */
 /* sections                                                                   */
 /* ========================================================================== */
 
-static void test_templates(Arena* a, MBBuildResult** out)
+static void test_plan_invariants(Arena* a)
 {
-    section("templates (seed 20260101)");
-    for (int i = 0; i < GOLDEN_COUNT; i++) {
-        const Golden* g = &GOLDEN[i];
-        const MBStructure* st = mb_structure_by_id(g->id);
-        check(g->id, st != NULL, "unknown structure id in the golden table");
+    section("plan-driven invariants (all structures x first/middle/last style)");
+
+    int styleIdx[3];
+    styleIdx[0] = 0;
+    styleIdx[1] = MB_STYLE_COUNT / 2;
+    styleIdx[2] = MB_STYLE_COUNT - 1;
+
+    static const char* invariantKeywords[] = { "alpha", "beta" };
+    const char* mediumLabel = "\xe4\xb8\xad\xe5\x9e\x8b"; /* medium */
+
+    for (int i = 0; i < MB_STRUCTURE_COUNT; i++) {
+        const MBStructure* st = &MB_STRUCTURES[i];
+        for (int k = 0; k < 3; k++) {
+            const MBStyle* style = &MB_STYLES[styleIdx[k]];
+            MBLlmPlan plan = plan_from_structure(st, style->id, "invariant");
+            plan.keywords = invariantKeywords;
+            plan.keywordCount = 2;
+            plan.scale = "medium";
+
+            char label[96];
+            snprintf(label, sizeof label, "%s/%s", st->id, style->id);
+
+            MBBuildResult* r = mb_generate(a, "invariant build", 777u, &plan, NULL);
+            validate_build(a, label, r);
+            if (!r) continue;
+
+            expect_str(label, r->report.structure, st->id);
+            expect_str(label, r->report.structureLabel, st->label);
+            expect_str(label, r->report.scale, mediumLabel);
+            expect_int(label, r->report.keywordCount, 2);
+            check(label, r->report.keywords != NULL &&
+                         strcmp(r->report.keywords[0], "alpha") == 0 &&
+                         strcmp(r->report.keywords[1], "beta") == 0,
+                  "plan keywords did not reach the report");
+            check(label, !r->report.hasLlmUser, "a NULL trace must not be flagged as a user trace");
+        }
+    }
+}
+
+static void test_fixtures(Arena* a)
+{
+    section("plan fixtures (seed 20260101, pinned counts)");
+
+    for (int i = 0; i < FIXTURE_COUNT; i++) {
+        const PlanFixture* f = &FIXTURES[i];
+        const MBStructure* st = mb_structure_by_id(f->structure);
+        check(f->structure, st != NULL, "unknown structure id in the fixture table");
         if (!st) continue;
 
-        MBGenerateInput in;
-        memset(&in, 0, sizeof in);
-        in.prompt = st->keywords[0];
-        in.structureId = g->id;
-        in.scale = MB_SCALE_AUTO;
-        in.seed = 20260101u;
+        MBLlmPlan plan = plan_make(f->structure, f->style, f->width, f->depth,
+                                   f->height, f->floors, NULL);
+        plan.scale = "medium";
 
-        MBBuildResult* r = mb_generate(a, &in);
-        out[i] = r;
-        validate_build(a, g->id, r);
+        MBBuildResult* r = mb_generate(a, "fixture build", f->seed, &plan, NULL);
+        validate_build(a, f->structure, r);
         if (!r) continue;
 
         printf("  . %-14s %2dx%-2d h%-2d  %5zu blocks  %d materials\n",
-               g->id, r->size.x, r->size.z, r->size.y, r->blockCount, r->byMaterialCount);
+               f->structure, r->size.x, r->size.z, r->size.y,
+               r->blockCount, r->byMaterialCount);
 
-        expect_int(g->id, r->size.x, g->width);
-        expect_int(g->id, r->size.z, g->depth);
-        expect_int(g->id, r->size.y, g->height);
-        expect_int(g->id, (long)r->blockCount, g->blocks);
-        expect_int(g->id, r->byMaterialCount, g->materials);
-
-        /* The chosen template must also be the one the planner reports. */
-        expect_str(g->id, r->report.structure, g->id);
-        check(g->id, r->report.structureLabel != NULL && r->report.structureLabel[0] != '\0',
-              "empty structure label");
-        check(g->id, !r->report.isLlm, "a local build must not be flagged as llm");
+        expect_str(f->structure, r->report.structure, f->structure);
+        expect_int(f->structure, r->size.x, f->sizeX);
+        expect_int(f->structure, r->size.z, f->sizeZ);
+        expect_int(f->structure, r->size.y, f->sizeY);
+        expect_int(f->structure, (long)r->blockCount, f->blocks);
+        expect_int(f->structure, r->byMaterialCount, f->materials);
     }
 }
 
-static void test_styles(Arena* a)
+static void test_plan_semantics(Arena* a)
 {
-    section("material styles (seed 7)");
-    for (int i = 0; i < MB_STYLE_COUNT; i++) {
-        const MBStyle* s = &MB_STYLES[i];
-        MBGenerateInput in;
-        memset(&in, 0, sizeof in);
-        in.prompt = s->keywords[0];
-        in.styleId = s->id;
-        in.scale = MB_SCALE_AUTO;
-        in.seed = 7u;
+    section("plan semantics: fallbacks, palette, scale, prompt");
 
-        MBBuildResult* r = mb_generate(a, &in);
-        char label[64];
-        snprintf(label, sizeof label, "style %s", s->id);
-        check(label, r != NULL && r->blockCount > 0, "style produced no blocks");
+    /* Unknown ids fall back instead of crashing; the default style must win. */
+    MBLlmPlan unknown = plan_make("no-such-structure", "no-such-style",
+                                  15, 11, 5, 2, NULL);
+    MBBuildResult* fb = mb_generate(a, "fallback", 123u, &unknown, NULL);
+    validate_build(a, "unknown ids", fb);
+    if (fb) {
+        expect_str("unknown structure falls back to the default",
+                   fb->report.structure, MB_DEFAULT_STRUCTURE_ID);
+        check("unknown style falls back to the default palette",
+              build_uses_material(fb, "minecraft:white_concrete"),
+              "the modern wall material is missing");
+        check("a NULL trace leaves hasLlmUser false", !fb->report.hasLlmUser, "");
+    }
+
+    /* Per-slot palette overrides win over the style defaults. */
+    MBLlmPlan palette = plan_make("modern-house", "modern", 15, 11, 5, 2,
+                                  "Palette Plan");
+    palette.palette.wall = "minecraft:deepslate_bricks";
+    palette.palette.light = "minecraft:glowstone";
+    MBBuildResult* pb = mb_generate(a, "palette plan", 99u, &palette, NULL);
+    validate_build(a, "palette override", pb);
+    if (pb) {
+        check("a plan palette override replaces the wall",
+              build_uses_material(pb, "minecraft:deepslate_bricks"),
+              "deepslate_bricks missing");
+        check("a plan palette override replaces the light",
+              build_uses_material(pb, "minecraft:glowstone"),
+              "glowstone missing");
+        check("the report carries the model name",
+              pb->name != NULL && strstr(pb->name, "Palette Plan") != NULL,
+              pb->name ? pb->name : "(null)");
+    }
+
+    /* Scale is a label passed through the report; unknown values mean medium. */
+    {
+        static const char* scales[4] = { "small", "medium", "large", "HUGE" };
+        static const char* labels[4] = {
+            "\xe5\xb0\x8f\xe5\x9e\x8b",   /* small */
+            "\xe4\xb8\xad\xe5\x9e\x8b",   /* medium */
+            "\xe5\xa4\xa7\xe5\x9e\x8b",   /* large */
+            "\xe4\xb8\xad\xe5\x9e\x8b"    /* medium (fallback) */
+        };
+        for (int i = 0; i < 4; i++) {
+            MBLlmPlan p = plan_make("modern-house", "modern", 15, 11, 5, 2, NULL);
+            p.scale = scales[i];
+            char label[64];
+            snprintf(label, sizeof label, "scale %s", scales[i]);
+            MBBuildResult* r = mb_generate(a, "scale build", 5u, &p, NULL);
+            validate_build(a, label, r);
+            if (!r) continue;
+            expect_str(label, r->report.scale, labels[i]);
+            check(label, r->summary != NULL && strstr(r->summary, labels[i]) != NULL,
+                  "the scale label is missing from the summary");
+        }
+    }
+
+    /* The prompt is trimmed before it reaches the report. */
+    {
+        MBLlmPlan p = plan_make("modern-house", "modern", 15, 11, 5, 2, "Prompt Plan");
+        p.scale = "large";
+        MBBuildResult* r = mb_generate(a, "  a modern house  ", 99u, &p, NULL);
+        validate_build(a, "prompt trim", r);
+        if (r) {
+            expect_str("the prompt is trimmed", r->report.prompt, "a modern house");
+            expect_int("the report records the seed", (long)r->report.seed, 99);
+            expect_str("the scale label is large",
+                       r->report.scale, "\xe5\xa4\xa7\xe5\x9e\x8b");
+            check("the summary mentions the scale",
+                  r->summary != NULL &&
+                  strstr(r->summary, "\xe5\xa4\xa7\xe5\x9e\x8b") != NULL,
+                  "large scale missing from the summary");
+        }
     }
 }
 
-static void test_prompt_parsing(Arena* a)
+static void test_plan_determinism(Arena* a)
 {
-    section("prompt parsing");
-    MBBuildResult* r;
+    section("determinism and seed jitter");
 
-    MBGenerateInput in;
-    memset(&in, 0, sizeof in);
-    in.prompt = "\xe4\xb8\xad\xe4\xb8\x96\xe7\xba\xaa\xe7\x9f\xb3\xe7\xa0\x96"
-                "\xe5\x9f\x8e\xe5\xa0\xa1\xe5\xa1\x94\xe6\xa5\xbc\xef\xbc\x8c"
-                "\xe9\xab\x98 24 \xe6\xa0\xbc\xef\xbc\x8c\xe5\xb8\xa6\xe7\xae\xad"
-                "\xe7\xaa\x97\xe5\x92\x8c\xe9\x9b\x89\xe5\xa0\x8d";
-    in.scale = MB_SCALE_AUTO;
-    in.seed = 1u;
-    r = mb_generate(a, &in);
-    expect_str("recognises a castle tower", r ? r->report.structure : NULL, "castle-tower");
+    MBLlmPlan plan = plan_make("modern-house", "modern", 15, 11, 5, 2,
+                               "Deterministic House");
+    plan.scale = "medium";
 
-    /* Requested footprint 20x12; the modern house roof overhangs one block on
-     * every side, so the exported bounding box is the footprint plus two. */
-    memset(&in, 0, sizeof in);
-    in.prompt = "\xe7\x8e\xb0\xe4\xbb\xa3\xe5\x88\xab\xe5\xa2\x85 \xe5\xae\xbd 20 \xe6\xb7\xb1 12";
-    in.seed = 1u;
-    r = mb_generate(a, &in);
-    expect_int("width 20 becomes a 22 wide box", r ? r->size.x : -1, 22);
-    expect_int("depth 12 becomes a 14 deep box", r ? r->size.z : -1, 14);
+    MBBuildResult* p = mb_generate(a, "determinism", 42u, &plan, NULL);
+    MBBuildResult* q = mb_generate(a, "determinism", 42u, &plan, NULL);
+    validate_build(a, "same seed", p);
+    validate_build(a, "same seed", q);
+    check("the same plan and seed reproduce the same build", blocks_equal(p, q),
+          "blocks differ");
 
-    MBGenerateInput narrow, wide;
-    memset(&narrow, 0, sizeof narrow);
-    narrow.prompt = "\xe5\x9f\x8e\xe5\xa2\x99 \xe5\xae\xbd 20";
-    narrow.seed = 1u;
-    wide = narrow;
-    wide.prompt = "\xe5\x9f\x8e\xe5\xa2\x99 \xe5\xae\xbd 30";
-
-    MBBuildResult* rn = mb_generate(a, &narrow);
-    MBBuildResult* rw = mb_generate(a, &wide);
-    expect_int("an explicit width really drives the output",
-               (rw && rn) ? rw->size.x - rn->size.x : -1, 10);
-
-    MBGenerateInput other = narrow;
-    other.seed = 999u;
-    MBBuildResult* ro = mb_generate(a, &other);
-    expect_int("an explicit width is not jittered by the seed",
-               (ro && rn) ? ro->size.x - rn->size.x : -1, 0);
-
-    memset(&in, 0, sizeof in);
-    in.prompt = "just build me something";
-    in.seed = 1u;
-    r = mb_generate(a, &in);
-    check("an unrecognised prompt falls back to the default template",
-          r != NULL && r->blockCount > 0, "no blocks");
-    expect_str("fallback structure", r ? r->report.structure : NULL, MB_DEFAULT_STRUCTURE_ID);
-}
-
-static void test_determinism(Arena* a, const MBBuildResult* first)
-{
-    section("determinism");
-    MBGenerateInput in;
-    memset(&in, 0, sizeof in);
-    in.prompt = "cabin";
-    in.scale = MB_SCALE_AUTO;
-    in.seed = 42u;
-
-    MBBuildResult* p = mb_generate(a, &in);
-    MBBuildResult* q = mb_generate(a, &in);
-    check("the same seed reproduces the same build", blocks_equal(p, q), "blocks differ");
-
-    in.seed = 43u;
-    MBBuildResult* s = mb_generate(a, &in);
-    check("a different seed produces a variant", !blocks_equal(p, s), "blocks are identical");
-
-    /* An explicit structure id must survive the request. */
-    in.structureId = "castle-wall";
-    in.seed = 5u;
-    MBBuildResult* t = mb_generate(a, &in);
-    expect_str("an explicit structure id wins over the prompt",
-               t ? t->report.structure : NULL, "castle-wall");
-
-    check("the first template is reproducible too", first != NULL, "missing build");
+    MBBuildResult* s = mb_generate(a, "determinism", 43u, &plan, NULL);
+    validate_build(a, "different seed", s);
+    check("a different seed produces a variant", !blocks_equal(p, s),
+          "blocks are identical");
 }
 
 static void test_llm_extraction(Arena* a)
@@ -450,7 +538,7 @@ static void test_llm_build(Arena* a)
         "{\"structure\":\"castle-tower\",\"style\":\"medieval\",\"scale\":\"large\","
         "\"width\":16,\"depth\":16,\"height\":28,\"floors\":3,"
         "\"palette\":{\"wall\":\"stone_bricks\",\"accent\":\"white_concrete\"},"
-        "\"name\":\"\xe7\x81\xb0\xe7\x9f\xb3\xe5\x93\xa8\xe5\xa1\x94\","
+        "\"name\":\"\xe7\x81\xb0\xe7\x9f\xb3\xe5\xa1\x94\","
         "\"keywords\":[\"\xe5\x9f\x8e\xe5\xa0\xa1\",\"\xe5\xa1\x94\xe6\xa5\xbc\"],"
         "\"modifiers\":[\"\xe5\xa4\x9a\xe5\xb1\x82\xe7\xbb\x93\xe6\x9e\x84\"],"
         "\"notes\":[\"\xe4\xb8\x89\xe5\xb1\x82\xe7\x9f\xb3\xe5\xa1\x94\xef\xbc\x8c"
@@ -471,31 +559,34 @@ static void test_llm_build(Arena* a)
     const char* prompt = "\xe7\xbb\x99\xe6\x88\x91\xe9\x80\xa0\xe4\xb8\x80\xe5\xba\xa7"
                          "\xe7\x81\xb0\xe8\x89\xb2\xe7\x9f\xb3\xe5\xa1\x94";
 
-    MBBuildResult* ai = mb_generate_with_plan(a, prompt, 4242u, &plan, &trace,
-                                              NULL, NULL, MB_SCALE_AUTO);
+    MBBuildResult* ai = mb_generate(a, prompt, 4242u, &plan, &trace);
     validate_build(a, "llm plan", ai);
     if (!ai) return;
 
-    check("the report is flagged as llm-generated", ai->report.isLlm, "isLlm is false");
     check("the report carries the model name",
           ai->report.hasLlmUser && strcmp(ai->report.llm.model, "stub-model") == 0,
           ai->report.llm.model);
     expect_str("the report carries the endpoint", ai->report.llm.endpoint, "api.example.com");
     expect_int("the report carries the latency", ai->report.llm.latencyMs, 123);
     expect_str("the model chose the template", ai->report.structure, "castle-tower");
+    expect_str("the model chose the scale", ai->report.scale, "\xe5\xa4\xa7\xe5\x9e\x8b");
     check("the model's name is used",
-          ai->name != NULL && strncmp(ai->name, "\xe7\x81\xb0\xe7\x9f\xb3\xe5\x93\xa8\xe5\xa1\x94", 12) == 0,
-          ai->name);
+          ai->name != NULL &&
+          strstr(ai->name, "\xe7\x81\xb0\xe7\x9f\xb3\xe5\xa1\x94") != NULL,
+          ai->name ? ai->name : "(null)");
     expect_int("keywords are passed through", ai->report.keywordCount, 2);
     check("keyword text is passed through",
           ai->report.keywordCount == 2 &&
           strcmp(ai->report.keywords[0], "\xe5\x9f\x8e\xe5\xa0\xa1") == 0 &&
           strcmp(ai->report.keywords[1], "\xe5\xa1\x94\xe6\xa5\xbc") == 0,
           "keyword mismatch");
-    /* The two boilerplate notes come first; the model's own notes are appended. */
+    /* The two boilerplate notes come first; the model's own note is appended. */
+    expect_int("the report keeps the plan notes plus boilerplate",
+               ai->report.noteCount, plan.noteCount + 2);
     bool sawNote = false;
     for (int i = 0; i < ai->report.noteCount; i++) {
-        if (strstr(ai->report.notes[i], "\xe4\xb8\x89\xe5\xb1\x82\xe7\x9f\xb3\xe5\xa1\x94") != NULL) {
+        if (ai->report.notes[i] &&
+            strstr(ai->report.notes[i], "\xe4\xb8\x89\xe5\xb1\x82\xe7\x9f\xb3\xe5\xa1\x94") != NULL) {
             sawNote = true;
         }
     }
@@ -515,20 +606,14 @@ static void test_llm_build(Arena* a)
     bare.palette.glass = NULL;
     bare.palette.light = NULL;
     bare.palette.nature = NULL;
-    MBBuildResult* bareBuild = mb_generate_with_plan(a, prompt, 4242u, &bare, &trace,
-                                                     NULL, NULL, MB_SCALE_AUTO);
+    MBBuildResult* bareBuild = mb_generate(a, prompt, 4242u, &bare, &trace);
     check("an empty palette falls back to the style defaults",
-          bareBuild != NULL && !blocks_equal(ai, bareBuild), "identical to the explicit plan");
+          bareBuild != NULL && !blocks_equal(ai, bareBuild),
+          "identical to the explicit plan");
 
-    MBBuildResult* again = mb_generate_with_plan(a, prompt, 4242u, &plan, &trace,
-                                                 NULL, NULL, MB_SCALE_AUTO);
+    MBBuildResult* again = mb_generate(a, prompt, 4242u, &plan, &trace);
     check("the same plan reproduces the same build", blocks_equal(ai, again),
           "blocks differ between runs");
-
-    MBBuildResult* locked = mb_generate_with_plan(a, prompt, 4242u, &plan, &trace,
-                                                  "bridge", NULL, MB_SCALE_AUTO);
-    expect_str("the UI lock overrides the model's choice",
-               locked ? locked->report.structure : NULL, "bridge");
 }
 
 static void test_exporters(Arena* a, const MBBuildResult* r)
@@ -549,7 +634,7 @@ static void test_exporters(Arena* a, const MBBuildResult* r)
     check("mcfunction emits one setblock per block",
           count_prefix_lines(mc, "setblock ") == (int)r->blockCount, detail);
     check("mcfunction has no NaN coordinate", strstr(mc, "NaN") == NULL, "");
-    check("mcfunction starts with the build name",
+    check("mcfunction starts with a comment and the build name",
           strncmp(mc, "# ", 2) == 0 && strstr(mc, r->name) != NULL, "missing header");
     snprintf(detail, sizeof detail, "# \xe5\x85\xb1 %zu \xe4\xb8\xaa\xe6\x96\xb9\xe5\x9d\x97",
              r->blockCount);
@@ -564,6 +649,7 @@ static void test_exporters(Arena* a, const MBBuildResult* r)
         MBJson* version = mb_json_get(back, "version");
         MBJson* blocks = mb_json_get(back, "blocks");
         MBJson* planner = mb_json_get(back, "planner");
+        MBJson* engine = planner ? mb_json_get(planner, "engine") : NULL;
         expect_str("JSON format marker", format ? format->u.str.ptr : NULL,
                    "minecraft-builder/plan");
         check("JSON version is 1", version && version->type == MB_JSON_NUM &&
@@ -573,6 +659,7 @@ static void test_exporters(Arena* a, const MBBuildResult* r)
               (int)blocks->u.arr.count == (int)r->blockCount, "block count mismatch");
         check("JSON carries the planner report", planner && planner->type == MB_JSON_OBJ,
               "planner section missing");
+        expect_str("JSON reports the llm engine", engine ? engine->u.str.ptr : NULL, "llm");
     }
 
     char* csv = mb_export_csv(a, r);
@@ -637,6 +724,13 @@ static void test_helpers(Arena* a)
                mb_display_width("A\xe4\xb8\xad" "B"), 4);
     expect_int("terminal width ignores ANSI colours",
                mb_display_width("\x1b[38;2;1;2;3m\xe4\xb8\xad\x1b[0m"), 2);
+    {
+        size_t n = 0;
+        U16* u = mb_u16_from_utf8(a, "A\xe4\xb8\xad" "B", &n);
+        expect_int("UTF-8 to UTF-16 code unit count", (long)n, 3);
+        expect_str("UTF-16 back to UTF-8 round trips",
+                   mb_utf8_from_u16(a, u, n), "A\xe4\xb8\xad" "B");
+    }
     {
         SBuf clipped;
         mb_sb_init(&clipped, a);
@@ -788,6 +882,9 @@ static void test_preview(Arena* a, const MBBuildResult* r)
 {
     section("3d preview and bmp output");
 
+    check("a build is available for preview", r != NULL, "missing build");
+    if (!r) return;
+
     MBCamera cam;
     mb_camera_default(&cam, r);
     check("the default fov is sane", cam.fov > 0.10 && cam.fov < 3.0, "fov out of range");
@@ -857,28 +954,34 @@ static void test_preview(Arena* a, const MBBuildResult* r)
           stride % 4u == 0u && stride >= (size_t)W * 3u, "bad row stride");
 }
 
+/* ========================================================================== */
+
 int main(void)
 {
     Arena arena;
     mb_arena_init(&arena);
 
-    MBBuildResult* builds[GOLDEN_COUNT];
-    memset(builds, 0, sizeof builds);
-
-    printf("Minecraft Builder — C edition test suite\n");
+    printf("Minecraft Builder - C edition test suite\n");
     printf("materials: %d   structures: %d   styles: %d\n",
            MB_MATERIAL_COUNT, MB_STRUCTURE_COUNT, MB_STYLE_COUNT);
 
-    test_templates(&arena, builds);
-    test_styles(&arena);
-    test_prompt_parsing(&arena);
-    test_determinism(&arena, builds[0]);
+    /* One shared, plan-generated fixture for the exporter and preview tests. */
+    MBLlmPlan fixturePlan = plan_make("modern-house", "modern", 15, 11, 5, 2,
+                                      "Export Fixture");
+    MBBuildResult* fixture = mb_generate(&arena, "export fixture", 20260101u,
+                                         &fixturePlan, NULL);
+    validate_build(&arena, "export fixture", fixture);
+
+    test_plan_invariants(&arena);
+    test_fixtures(&arena);
+    test_plan_semantics(&arena);
+    test_plan_determinism(&arena);
     test_llm_extraction(&arena);
     test_llm_build(&arena);
-    test_exporters(&arena, builds[0]);
+    test_exporters(&arena, fixture);
     test_helpers(&arena);
     test_settings_store();
-    test_preview(&arena, builds[0]);
+    test_preview(&arena, fixture);
 
     printf("\n%s  %d checks, %d failures\n",
            g_failures == 0 ? "[PASS]" : "[FAIL]", g_checks, g_failures);
