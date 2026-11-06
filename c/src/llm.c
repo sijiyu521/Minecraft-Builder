@@ -155,7 +155,13 @@ static char* system_prompt(Arena* a)
         "3. palette 必须与你选定的 style 相符，并且是上面列表里真实存在的方块名。"
         "用户点名了某个方块（如\"白桦木板\"）就用它。\n"
         "4. 一个字段都不能少，即使不确定也要给出合理默认值。\n"
-        "5. 只输出 JSON。");
+        "5. 比例要像真实建筑：height 是含屋顶的总高度，住宅一般 8-16，"
+        "塔楼可以 16-32；width/depth 通常不小于 height 的一半，"
+        "不要生成又细又高的\"烟囱楼\"。楼层数要和 height 匹配，"
+        "单层住宅 floors=1，两层别墅 floors=2。\n"
+        "6. palette 必须有对比：roof 不要和 wall 用同一种方块，"
+        "frame/accent 也不要和 wall 完全相同；不确定就沿用该 style 的默认配色。\n"
+        "7. 只输出 JSON。");
 
     return mb_sb_done(&b);
 }

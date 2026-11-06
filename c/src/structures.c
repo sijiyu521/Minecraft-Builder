@@ -21,32 +21,6 @@
 /* shared helpers                                                             */
 /* ========================================================================== */
 
-static void punch_windows(MBBuilder* b, const MBBuildOptions* o, int baseY, int wallHeight)
-{
-    int w = o->width, d = o->depth;
-    if (wallHeight < 4 || w < 7 || d < 7) return;
-
-    int sill = baseY + 1;
-    int head = baseY + (wallHeight - 2 < 2 ? wallHeight - 2 : 2);
-    if (head < sill) return;
-
-    for (int x = 2; x <= w - 3; x += 3) {
-        int x2 = x + 1 < w - 3 ? x + 1 : w - 3;
-        mb_b_cut_opening(b, 'x', x, x2, sill, head, 0, 0);
-        mb_b_glaze(b, 'x', x, x2, sill, head, 0, o->palette.glass, 0);
-        mb_b_cut_opening(b, 'x', x, x2, sill, head, d - 1, 0);
-        mb_b_glaze(b, 'x', x, x2, sill, head, d - 1, o->palette.glass, 0);
-    }
-
-    for (int z = 2; z <= d - 3; z += 3) {
-        int z2 = z + 1 < d - 3 ? z + 1 : d - 3;
-        mb_b_cut_opening(b, 'z', z, z2, sill, head, 0, 0);
-        mb_b_glaze(b, 'z', z, z2, sill, head, 0, o->palette.glass, 0);
-        mb_b_cut_opening(b, 'z', z, z2, sill, head, w - 1, 0);
-        mb_b_glaze(b, 'z', z, z2, sill, head, w - 1, o->palette.glass, 0);
-    }
-}
-
 static void punch_door(MBBuilder* b, const MBBuildOptions* o, int baseY)
 {
     int w = o->width, d = o->depth;
@@ -72,55 +46,175 @@ static void roof_lights(MBBuilder* b, const MBBuildOptions* o, int y)
     }
 }
 
+/* A glazed band with structural mullions, used on every floor of the modern
+ * house. The opening is cut out of the wall, filled with glass, then frame
+ * columns are stamped on top every other block so the facade reads as windows
+ * instead of a glass ribbon. `skipA`/`skipB` leave room for a door. */
+static void window_band(MBBuilder* b, const MBBuildOptions* o,
+                        char axis, int plane, int from, int to,
+                        int y1, int y2, int skipA, int skipB)
+{
+    if (to - from < 2 || y2 < y1) return;
+    mb_b_cut_opening(b, axis, from, to, y1, y2, plane, 0);
+    mb_b_glaze(b, axis, from, to, y1, y2, plane, o->palette.glass, 0);
+
+    for (int i = from; i <= to; i++) {
+        int px = axis == 'x' ? i : plane;
+        int pz = axis == 'x' ? plane : i;
+        bool mullion = ((i - from) % 3 == 0) && i != skipA && i != skipB;
+        if (mullion) {
+            for (int y = y1; y <= y2; y++) mb_b_set(b, px, y, pz, o->palette.frame);
+        }
+        mb_b_set(b, px, y1 - 1, pz, o->palette.accent);
+        mb_b_set(b, px, y2 + 1, pz, o->palette.frame);
+    }
+}
+
 /* ========================================================================== */
 /* 1. modern house                                                            */
 /* ========================================================================== */
 
 static void build_modern_house(MBBuilder* b, const MBBuildOptions* o)
 {
-    int w = o->width, d = o->depth, h = o->height, floors = o->floors;
+    int w = o->width, d = o->depth;
+    int floors = o->floors > 0 ? o->floors : 1;
+    if (floors > 4) floors = 4;
+
+    /* The plan's height is the *total* height of the building, not the height
+     * of one storey. Split it into equal storeys 3-6 blocks tall so a 13-block
+     * plan with two floors becomes a two-storey house instead of a 27-block
+     * tower with pancake slabs. */
+    int story = (o->height - 2) / floors;
+    if (story < 4) story = 4;
+    if (story > 6) story = 6;
+    int top = 1 + floors * story;   /* first y above the top storey's ceiling */
 
     /* Foundation with a one block lip all around. */
     mb_b_rect(b, (MBRect){ -1, -1, w, d }, 0, "minecraft:stone_bricks");
     mb_b_rect(b, (MBRect){ 0, 0, w - 1, d - 1 }, 0, o->palette.floor);
 
     for (int floor = 0; floor < floors; floor++) {
-        int base = 1 + floor * (h + 1);
-        mb_b_perimeter(b, 0, base, 0, w - 1, base + h - 1, d - 1, o->palette.wall);
-        /* Strong horizontal band between floors. */
-        mb_b_perimeter(b, 0, base, 0, w - 1, base, d - 1, o->palette.accent);
+        int base = 1 + floor * story;
 
-        punch_windows(b, o, base, h);
+        mb_b_perimeter(b, 0, base, 0, w - 1, base + story - 1, d - 1, o->palette.wall);
+        /* Strong horizontal band at every floor line, plus corner columns. */
+        mb_b_perimeter(b, 0, base, 0, w - 1, base, d - 1, o->palette.accent);
+        mb_b_box(b, 0, base, 0, 0, base + story - 1, 0, o->palette.frame);
+        mb_b_box(b, w - 1, base, 0, w - 1, base + story - 1, 0, o->palette.frame);
+        mb_b_box(b, 0, base, d - 1, 0, base + story - 1, d - 1, o->palette.frame);
+        mb_b_box(b, w - 1, base, d - 1, w - 1, base + story - 1, d - 1, o->palette.frame);
+
+        int wy1 = base + 1;
+        int wy2 = base + story - 2;
+        if (wy2 < wy1) wy2 = wy1;
+        if (w >= 9) {
+            window_band(b, o, 'x', d - 1, 2, w - 3, wy1, wy2, -99, -99);
+            window_band(b, o, 'x', 0, 2, w - 3, wy1, wy2, -99, -99);
+        }
+        if (d >= 8) {
+            window_band(b, o, 'z', 0, 2, d - 3, wy1, wy2, -99, -99);
+            window_band(b, o, 'z', w - 1, 2, d - 3, wy1, wy2, -99, -99);
+        }
 
         /* Ceiling / next floor slab. */
-        mb_b_rect(b, (MBRect){ 0, 0, w - 1, d - 1 }, base + h, o->palette.floor);
-
+        mb_b_rect(b, (MBRect){ 0, 0, w - 1, d - 1 }, base + story, o->palette.floor);
         /* Interior lighting. */
-        mb_b_set(b, w / 2, base + h - 1, d / 2, o->palette.light);
-        if (w > 11) {
-            mb_b_set(b, 2, base + h - 1, 2, o->palette.light);
-            mb_b_set(b, w - 3, base + h - 1, d - 3, o->palette.light);
-        }
+        mb_b_set(b, w / 2, base + story - 1, d / 2, o->palette.light);
     }
 
     punch_door(b, o, 1);
+    /* Entrance: two steps down to the garden, a slim cantilevered canopy above
+     * the door (no posts to clutter the facade) and two planters. */
+    {
+        int doorX = w / 2 - 1;
+        if (doorX < 1) doorX = 1;
+        int canopyY = 1 + story;
+        if (canopyY < 5) canopyY = 5;
+        mb_b_rect(b, (MBRect){ doorX - 1, d, doorX + 2, d + 1 }, 0, o->palette.floor);
+        mb_b_rect(b, (MBRect){ doorX - 2, d, doorX + 3, d + 1 }, canopyY, o->palette.roof);
+        mb_b_rect(b, (MBRect){ doorX - 2, d + 1, doorX + 3, d + 1 }, canopyY,
+                  o->palette.accent);
+        mb_b_set(b, doorX - 2, 1, d, o->palette.nature);
+        mb_b_set(b, doorX + 3, 1, d, o->palette.nature);
+        mb_b_set(b, doorX, canopyY - 1, d, o->palette.light);
+    }
 
-    /* Vertical circulation: a ladder shaft in one corner. Drawing it last means
-     * it punches through the slabs naturally. */
-    int top = 1 + floors * (h + 1);
+    /* Side garage: a lower wing breaks up the box massing and is the first
+     * thing that reads as "villa" instead of "apartment block". */
+    {
+        int gx1 = w, gx2 = w + 4;
+        int gz1 = 1, gz2 = d - 1;
+        if (gz2 - gz1 >= 4) {
+            mb_b_rect(b, (MBRect){ gx1, gz1, gx2, gz2 }, 0, o->palette.floor);
+            mb_b_perimeter(b, gx1, 1, gz1, gx2, story, gz2, o->palette.wall);
+            mb_b_perimeter(b, gx1, story, gz1, gx2, story, gz2, o->palette.accent);
+            mb_b_rect(b, (MBRect){ gx1, gz1, gx2, gz2 }, story + 1, o->palette.roof);
+            mb_b_perimeter(b, gx1, story + 1, gz1, gx2, story + 1, gz2, o->palette.accent);
+            /* Garage door on the same front facade as the entrance. */
+            mb_b_box(b, gx1 + 1, 1, gz2, gx2 - 1, 3, gz2, o->palette.roof);
+            mb_b_box(b, gx1 + 1, 4, gz2, gx2 - 1, 4, gz2, o->palette.frame);
+            mb_b_box(b, gx1, 1, gz1, gx1, story, gz1, o->palette.frame);
+            /* Driveway. */
+            mb_b_rect(b, (MBRect){ gx1 + 1, gz2 + 1, gx2 - 1, d + 1 }, 0,
+                      "minecraft:smooth_stone");
+            /* Connecting door into the house. */
+            mb_b_cut_opening(b, 'z', 2, 3, 1, 2, w - 1, 0);
+        }
+    }
+
+    /* Roof terrace: flat roof with overhang, accent fascia and a parapet. */
+    mb_b_rect(b, (MBRect){ -1, -1, w, d }, top, o->palette.roof);
+    mb_b_perimeter(b, -1, top, -1, w, top, d, o->palette.accent);
+    roof_lights(b, o, top);
+    mb_b_perimeter(b, 0, top + 1, 0, w - 1, top + 1, d - 1, o->palette.wall);
+    if (w > 9) {
+        mb_b_perimeter(b, 0, top + 2, 0, w - 1, top + 2, d - 1, "minecraft:glass_pane");
+    }
+    mb_b_set(b, 2, top + 1, 2, o->palette.nature);
+    mb_b_set(b, w - 3, top + 1, 2, o->palette.nature);
+    mb_b_set(b, 2, top + 1, d - 3, o->palette.nature);
+    mb_b_set(b, w - 3, top + 1, d - 3, o->palette.nature);
+
+    /* Pergola over one half of the roof terrace. */
+    if (w > 10 && d > 9 && floors > 1) {
+        int px[4] = { 3, w / 2, 3, w / 2 };
+        int pz[4] = { 3, 3, d - 4, d - 4 };
+        for (int i = 0; i < 4; i++) {
+            mb_b_box(b, px[i], top + 1, pz[i], px[i], top + 2, pz[i], o->palette.frame);
+        }
+        mb_b_box(b, 3, top + 3, 3, w / 2, top + 3, 3, o->palette.frame);
+        mb_b_box(b, 3, top + 3, d - 4, w / 2, top + 3, d - 4, o->palette.frame);
+        mb_b_box(b, 3, top + 3, 3, 3, top + 3, d - 4, o->palette.frame);
+        mb_b_box(b, w / 2, top + 3, 3, w / 2, top + 3, d - 4, o->palette.frame);
+        mb_b_set(b, 3, top + 4, 3, o->palette.nature);
+        mb_b_set(b, w / 2, top + 4, d - 4, o->palette.nature);
+    }
+
+    /* Vertical circulation: a ladder shaft in one corner, drawn last so it
+     * punches through the floor slabs. */
     for (int y = 1; y < top; y++) {
         mb_sketch_remove(&b->sketch, 1, y, 1);
         mb_b_set(b, 1, y, 1, "minecraft:ladder");
     }
+}
 
-    /* Flat roof with overhang, plus a dark fascia band. */
-    mb_b_rect(b, (MBRect){ -1, -1, w, d }, top, o->palette.roof);
-    mb_b_perimeter(b, -1, top, -1, w, top, d, o->palette.accent);
-    roof_lights(b, o, top);
-
-    /* Roof terrace railing on the top floor. */
-    if (floors > 1 && w > 9) {
-        mb_b_perimeter(b, -1, top + 1, -1, w, top + 1, d, "minecraft:glass_pane");
+/* A framed two-block-wide window, used by the cabin and the treehouse. */
+static void small_window(MBBuilder* b, const MBBuildOptions* o,
+                         char axis, int plane, int at, int y1, int y2)
+{
+    mb_b_cut_opening(b, axis, at, at + 1, y1, y2, plane, 0);
+    mb_b_glaze(b, axis, at, at + 1, y1, y2, plane, o->palette.glass, 0);
+    for (int i = at - 1; i <= at + 2; i++) {
+        int px = axis == 'x' ? i : plane;
+        int pz = axis == 'x' ? plane : i;
+        mb_b_set(b, px, y1 - 1, pz, o->palette.accent);
+        mb_b_set(b, px, y2 + 1, pz, o->palette.accent);
+    }
+    for (int y = y1; y <= y2; y++) {
+        mb_b_set(b, axis == 'x' ? at - 1 : plane, y, axis == 'x' ? plane : at - 1,
+                 o->palette.accent);
+        mb_b_set(b, axis == 'x' ? at + 2 : plane, y, axis == 'x' ? plane : at + 2,
+                 o->palette.accent);
     }
 }
 
@@ -130,62 +224,70 @@ static void build_modern_house(MBBuilder* b, const MBBuildOptions* o)
 
 static void build_cabin(MBBuilder* b, const MBBuildOptions* o)
 {
-    int w = o->width, d = o->depth, h = o->height;
+    int w = o->width, d = o->depth;
 
-    mb_b_rect(b, (MBRect){ 0, 0, w - 1, d - 1 }, 0, "minecraft:cobblestone");
-    mb_b_perimeter(b, 0, 1, 0, w - 1, h, d - 1, o->palette.frame);
-    mb_b_perimeter(b, 0, 1, 0, w - 1, h, d - 1, o->palette.frame);
+    /* Tall plans should not turn the cabin into a grain silo: the wall height
+     * is capped and the rest of the plan height becomes roof volume. */
+    int wall = o->height - 2;
+    if (wall < 4) wall = 4;
+    if (wall > 7) wall = 7;
+    int wallTop = 1 + wall;
+    int roofHalf = (d + 1) / 2 + 1;
+    int roofTop = wallTop + roofHalf;
 
-    /* Corner posts. */
-    mb_b_box(b, 0, 1, 0, 0, h + 1, 0, o->palette.accent);
-    mb_b_box(b, w - 1, 1, 0, w - 1, h + 1, 0, o->palette.accent);
-    mb_b_box(b, 0, 1, d - 1, 0, h + 1, d - 1, o->palette.accent);
-    mb_b_box(b, w - 1, 1, d - 1, w - 1, h + 1, d - 1, o->palette.accent);
+    /* Stone footing and plank floor. */
+    mb_b_rect(b, (MBRect){ -1, -1, w, d }, 0, "minecraft:cobblestone");
+    mb_b_rect(b, (MBRect){ 0, 0, w - 1, d - 1 }, 0, o->palette.floor);
+    mb_b_rect(b, (MBRect){ 1, 1, w - 2, d - 2 }, 1, o->palette.floor);
 
-    /* Windows: small squares instead of the wide modern glazing. */
-    if (w > 8) {
-        int xs[2] = { 2, w - 3 };
-        for (int i = 0; i < 2; i++) {
-            int x = xs[i];
-            mb_b_cut_opening(b, 'x', x, x, 2, 3, d - 1, 0);
-            mb_b_glaze(b, 'x', x, x, 2, 3, d - 1, o->palette.glass, 0);
-            mb_b_cut_opening(b, 'x', x, x, 2, 3, 0, 0);
-            mb_b_glaze(b, 'x', x, x, 2, 3, 0, o->palette.glass, 0);
-        }
+    /* Log walls with a darker base band and corner posts. */
+    mb_b_perimeter(b, 0, 1, 0, w - 1, wallTop, d - 1, o->palette.frame);
+    mb_b_perimeter(b, 0, 1, 0, w - 1, 1, d - 1, o->palette.accent);
+    mb_b_perimeter(b, 0, wallTop, 0, w - 1, wallTop, d - 1, o->palette.accent);
+    mb_b_box(b, 0, 1, 0, 0, wallTop + 1, 0, o->palette.accent);
+    mb_b_box(b, w - 1, 1, 0, w - 1, wallTop + 1, 0, o->palette.accent);
+    mb_b_box(b, 0, 1, d - 1, 0, wallTop + 1, d - 1, o->palette.accent);
+    mb_b_box(b, w - 1, 1, d - 1, w - 1, wallTop + 1, d - 1, o->palette.accent);
+
+    /* Windows: two per long wall (when there is room), one per short wall. */
+    int doorX = w / 2 - 1;
+    if (doorX < 1) doorX = 1;
+    int wy = 2;
+    int wy2 = wallTop - 1;
+    if (wy2 < wy) wy2 = wy;
+    if (w >= 9) {
+        small_window(b, o, 'x', d - 1, 2, wy, wy2);
+        small_window(b, o, 'x', d - 1, w - 4, wy, wy2);
+        small_window(b, o, 'x', 0, 2, wy, wy2);
+        small_window(b, o, 'x', 0, w - 4, wy, wy2);
     }
-    if (d > 8) {
-        int zs[2] = { 2, d - 3 };
-        for (int i = 0; i < 2; i++) {
-            int z = zs[i];
-            mb_b_cut_opening(b, 'z', z, z, 2, 3, 0, 0);
-            mb_b_glaze(b, 'z', z, z, 2, 3, 0, o->palette.glass, 0);
-            mb_b_cut_opening(b, 'z', z, z, 2, 3, w - 1, 0);
-            mb_b_glaze(b, 'z', z, z, 2, 3, w - 1, o->palette.glass, 0);
-        }
+    if (d >= 8) {
+        small_window(b, o, 'z', 0, 2, wy, wy2);
+        small_window(b, o, 'z', w - 1, 2, wy, wy2);
     }
 
     punch_door(b, o, 1);
 
-    /* Gable roof with a one block overhang. */
-    mb_b_gable_roof(b, -1, -1, w, d, h + 1, o->palette.roof, o->palette.frame);
-
-    /* Floor inside. */
-    mb_b_rect(b, (MBRect){ 1, 1, w - 2, d - 2 }, 1, o->palette.floor);
-
-    /* Porch in front of the door. */
-    int doorX = w / 2 - 1;
-    if (doorX < 1) doorX = 1;
+    /* Porch: plank deck, two posts, a little roof and lanterns. */
     mb_b_rect(b, (MBRect){ doorX - 2, d, doorX + 3, d + 1 }, 1, o->palette.floor);
-    mb_b_box(b, doorX - 2, 2, d + 1, doorX - 2, 3, d + 1, o->palette.frame);
-    mb_b_box(b, doorX + 3, 2, d + 1, doorX + 3, 3, d + 1, o->palette.frame);
-    mb_b_rect(b, (MBRect){ doorX - 2, d, doorX + 3, d + 1 }, 4, o->palette.roof);
+    mb_b_box(b, doorX - 2, 1, d + 1, doorX - 2, 4, d + 1, o->palette.frame);
+    mb_b_box(b, doorX + 3, 1, d + 1, doorX + 3, 4, d + 1, o->palette.frame);
+    mb_b_rect(b, (MBRect){ doorX - 3, d, doorX + 4, d + 2 }, 5, o->palette.roof);
+    mb_b_set(b, doorX - 3, 2, d + 1, o->palette.light);
+    mb_b_set(b, doorX + 4, 2, d + 1, o->palette.light);
+    mb_b_set(b, doorX - 2, 1, d + 1, o->palette.nature);
+    mb_b_set(b, doorX + 3, 1, d + 1, o->palette.nature);
 
-    /* Interior lights on the ground floor. */
-    mb_b_set(b, w / 2, h, d / 2, o->palette.light);
+    /* Gable roof: flush gable ends, one block of eaves front and back. */
+    mb_b_gable_roof(b, 0, -1, w - 1, d, wallTop + 1, o->palette.roof, o->palette.frame);
+
+    /* Chimney on the side, capped with stone. */
+    mb_b_box(b, w - 2, 1, 1, w - 2, roofTop + 2, 1, "minecraft:bricks");
+    mb_b_box(b, w - 2, roofTop + 3, 1, w - 2, roofTop + 3, 1, "minecraft:stone_bricks");
+
+    /* Interior light. */
+    mb_b_set(b, w / 2, wallTop - 1, d / 2, o->palette.light);
     mb_b_set(b, doorX, 2, d - 2, o->palette.light);
-
-    /* Chimney. */
-    mb_b_box(b, w - 2, 1, 1, w - 2, h + 3, 1, "minecraft:bricks");
 }
 
 /* ========================================================================== */
@@ -194,52 +296,99 @@ static void build_cabin(MBBuilder* b, const MBBuildOptions* o)
 
 static void build_castle_tower(MBBuilder* b, const MBBuildOptions* o)
 {
-    int w = o->width, d = o->depth, H = o->height;
+    int w = o->width, d = o->depth;
+    int H = o->height;
+    if (H < 10) H = 10;
+    if (H > 30) H = 30;
+
     int smaller = w < d ? w : d;
     int radius = smaller / 2 - 1;
     if (radius < 2) radius = 2;
+    if (radius > 6) radius = 6;
     double cx = 0.0, cz = 0.0;
 
-    /* Solid stone base. */
-    mb_b_cylinder(b, cx, cz, (double)radius, 0, 1, "minecraft:stone_bricks", 1, true, 0.0);
-    mb_b_cylinder(b, cx, cz, (double)radius + 0.6, 0, 0, "minecraft:cobblestone", 1, true, 0.0);
+    /* Battered base: the footing is wider than the shell and the first two
+     * courses step in, so the tower does not read as a plain cylinder. */
+    mb_b_cylinder(b, cx, cz, (double)radius + 1.4, 0, 1, "minecraft:cobblestone", 1, true, 0.0);
+    mb_b_cylinder(b, cx, cz, (double)radius + 0.7, 2, 2, o->palette.frame, 1, false, 0.0);
+    mb_b_cylinder(b, cx, cz, (double)radius, 3, H, o->palette.wall, 1, false, 0.0);
 
-    /* Shell. */
-    mb_b_cylinder(b, cx, cz, (double)radius, 2, H, o->palette.wall, 1, false, 0.0);
+    /* A string course every six blocks adds scale and hides the plain shell. */
+    for (int y = 6; y <= H - 3; y += 6) {
+        mb_b_cylinder(b, cx, cz, (double)radius, y, y, o->palette.accent, 1, false, 0.0);
+    }
 
-    /* Floor ring every 5 blocks. */
-    for (int y = 2 + 5; y <= H; y += 5) {
+    /* Floor rings with lights. */
+    for (int y = 5; y <= H - 2; y += 5) {
         mb_b_cylinder(b, cx, cz, (double)radius - 1.0, y, y, o->palette.floor, 1, true, 0.0);
         mb_b_set(b, 0, y + 1, 0, o->palette.light);
     }
 
-    /* Arrow slits in the four cardinal directions. */
+    /* Mid-height lookout gallery so a tall shaft has a readable silhouette. */
+    if (H >= 14) {
+        int gy = H / 2;
+        mb_b_cylinder(b, cx, cz, (double)radius + 0.8, gy, gy, o->palette.floor, 1, false, 0.0);
+        mb_b_cylinder(b, cx, cz, (double)radius + 0.8, gy + 1, gy + 1,
+                      "minecraft:iron_bars", 0, false, 0.0);
+        for (int k = 0; k < 8; k++) {
+            double angle = ((double)k / 8.0) * 3.14159265358979323846 * 2.0;
+            int px = mb_js_round(cx + cos(angle) * (double)(radius + 0.8));
+            int pz = mb_js_round(cz + sin(angle) * (double)(radius + 0.8));
+            mb_b_set(b, px, gy - 1, pz, o->palette.frame);
+        }
+    }
+
+    /* Arrow slits in the four cardinal directions, framed in the accent. */
     {
         static const int dirs[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
         for (int k = 0; k < 4; k++) {
-            for (int y = 4; y <= H - 3; y += 4) {
+            for (int y = 5; y <= H - 4; y += 5) {
                 for (int step = 0; step <= radius + 1; step++) {
                     int x = (int)cx + dirs[k][0] * step;
                     int z = (int)cz + dirs[k][1] * step;
                     if (!mb_sketch_has(&b->sketch, x, y, z)) continue;
                     mb_sketch_set(&b->sketch, x, y, z, o->palette.glass);
                     mb_sketch_set(&b->sketch, x, y + 1, z, o->palette.glass);
+                    mb_sketch_set(&b->sketch, x, y - 1, z, o->palette.accent);
+                    mb_sketch_set(&b->sketch, x, y + 2, z, o->palette.accent);
                 }
             }
         }
     }
 
-    /* Battlements. */
-    mb_b_ring_merlons(b, cx, cz, (double)radius, H + 1, H + 2, o->palette.wall);
-    mb_b_cylinder(b, cx, cz, (double)radius, H + 1, H + 1, o->palette.floor, 1, false, 0.0);
-    mb_b_set(b, 0, H + 1, 0, o->palette.light);
+    /* Machicolation ring: corbels under the top walkway. */
+    mb_b_cylinder(b, cx, cz, (double)radius + 0.9, H - 1, H - 1, o->palette.frame, 1, false, 0.0);
+    for (int k = 0; k < 8; k++) {
+        double angle = ((double)k / 8.0) * 3.14159265358979323846 * 2.0;
+        int px = mb_js_round(cx + cos(angle) * (double)(radius + 1));
+        int pz = mb_js_round(cz + sin(angle) * (double)(radius + 1));
+        mb_b_set(b, px, H - 2, pz, o->palette.frame);
+    }
 
-    /* Entrance on the +Z side. */
-    mb_b_cut_opening(b, 'z', -1, 1, 2, 4, (int)cz + radius, 0);
-    mb_b_set(b, 0, 5, (int)cz + radius, o->palette.accent);
+    /* A wider crown gallery, then battlements and a beacon flag. */
+    mb_b_cylinder(b, cx, cz, (double)radius + 1, H - 3, H - 1, o->palette.wall, 1, false, 0.0);
+    mb_b_cylinder(b, cx, cz, (double)radius + 1, H - 3, H - 3, o->palette.accent, 1, false, 0.0);
+    mb_b_ring_merlons(b, cx, cz, (double)radius + 1, H + 1, H + 2, o->palette.wall);
+    mb_b_cylinder(b, cx, cz, (double)radius + 1, H + 1, H + 1, o->palette.floor, 1, false, 0.0);
+    mb_b_set(b, 0, H + 2, 0, o->palette.light);
+    mb_b_box(b, 0, H + 2, 0, 0, H + 5, 0, o->palette.frame);
+    mb_b_box(b, 1, H + 4, 0, 2, H + 5, 0, "minecraft:red_wool");
 
-    /* Spiral ladder hint so the tower is traversable in game. */
-    for (int y = 2; y <= H; y++) {
+    /* Entrance: arched opening with stone steps and torches. */
+    {
+        int zf = (int)cz + radius;
+        mb_b_cut_opening(b, 'z', -1, 1, 3, 5, zf, 0);
+        mb_b_set(b, -1, 6, zf, o->palette.accent);
+        mb_b_set(b, 0, 6, zf, o->palette.accent);
+        mb_b_set(b, 1, 6, zf, o->palette.accent);
+        mb_b_set(b, -2, 4, zf, o->palette.light);
+        mb_b_set(b, 2, 4, zf, o->palette.light);
+        mb_b_box(b, -2, 0, zf + 1, 2, 2, zf + 2, "minecraft:stone_bricks");
+        mb_b_box(b, -1, 2, zf + 1, 1, 2, zf + 2, "minecraft:cobblestone");
+    }
+
+    /* Spiral ladder so the tower is traversable in game. */
+    for (int y = 3; y <= H; y++) {
         double angle = ((double)y / (double)H) * 3.14159265358979323846 * 2.0;
         int lx = mb_js_round(cx + cos(angle) * (double)(radius - 1));
         int lz = mb_js_round(cz + sin(angle) * (double)(radius - 1));
@@ -254,30 +403,56 @@ static void build_castle_tower(MBBuilder* b, const MBBuildOptions* o)
 
 static void build_treehouse(MBBuilder* b, const MBBuildOptions* o)
 {
-    int w = o->width, d = o->depth, h = o->height;
+    int w = o->width, d = o->depth;
     int smaller = w < d ? w : d;
     int radius = smaller / 2 - 1;
     if (radius < 3) radius = 3;
-    int deckY = h;
+    if (radius > 7) radius = 7;
 
-    /* Trunk. */
-    mb_b_cylinder(b, 0, 0, 1, 0, deckY, "minecraft:spruce_log", 1, true, 0.0);
-    mb_b_cylinder(b, 0, 0, 2, 0, 1, "minecraft:spruce_log", 1, true, 0.0);
+    int deckY = o->height - 5;
+    if (deckY < 4) deckY = 4;
+    if (deckY > 8) deckY = 8;
 
-    /* Platform. */
+    /* Trunk with roots. */
+    mb_b_cylinder(b, 0, 0, 1.4, 0, deckY + 3, "minecraft:spruce_log", 1, true, 0.0);
+    {
+        static const int roots[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        for (int k = 0; k < 4; k++) {
+            int rx = roots[k][0], rz = roots[k][1];
+            mb_b_box(b, rx, 0, rz, rx * 3, 1, rz * 3, "minecraft:spruce_log");
+        }
+    }
+
+    /* Platform with a braced underside. */
     mb_b_cylinder(b, 0, 0, (double)radius, deckY, deckY, o->palette.floor, 1, true, 0.0);
+    for (int k = 0; k < 4; k++) {
+        static const int dirs[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        int px = dirs[k][0] * (radius - 1);
+        int pz = dirs[k][1] * (radius - 1);
+        mb_b_box(b, px, deckY - 2, pz, px, deckY - 1, pz, o->palette.frame);
+    }
 
-    /* Cabin shell on the platform. */
+    /* Railing around the deck, with a gap on the +Z side for the ladder. */
+    mb_b_cylinder(b, 0, 0, (double)radius, deckY + 1, deckY + 1,
+                  "minecraft:iron_bars", 0, false, 0.0);
+    mb_sketch_remove(&b->sketch, 1, deckY + 1, 0);
+
+    /* Hut shell with windows on all four sides and a door facing +Z. */
     int shell = radius - 1;
     if (shell < 2) shell = 2;
-    mb_b_cylinder(b, 0, 0, (double)shell, deckY + 1, deckY + 3, o->palette.frame, 1, false, 0.0);
-
-    /* Windows around the shell. */
-    for (int i = 0; i < 8; i++) {
-        double angle = ((double)i / 8.0) * 3.14159265358979323846 * 2.0;
-        int x = mb_js_round(cos(angle) * (double)(radius - 1));
-        int z = mb_js_round(sin(angle) * (double)(radius - 1));
-        mb_sketch_set(&b->sketch, x, deckY + 2, z, o->palette.glass);
+    mb_b_cylinder(b, 0, 0, (double)shell, deckY + 1, deckY + 3, o->palette.wall, 1, false, 0.0);
+    {
+        static const int dirs[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        for (int k = 0; k < 4; k++) {
+            int px = dirs[k][0] * shell;
+            int pz = dirs[k][1] * shell;
+            mb_b_set(b, px, deckY + 2, pz, o->palette.glass);
+            mb_b_set(b, dirs[k][0] * (shell + 1), deckY + 2, dirs[k][1] * (shell + 1),
+                     o->palette.accent);
+        }
+        mb_b_cut_opening(b, 'z', 0, 1, deckY + 1, deckY + 2, shell, 0);
+        mb_b_set(b, 0, deckY + 3, shell, o->palette.accent);
+        mb_b_set(b, 1, deckY + 3, shell, o->palette.accent);
     }
     mb_b_set(b, 0, deckY + 3, 0, o->palette.light);
 
@@ -291,23 +466,29 @@ static void build_treehouse(MBBuilder* b, const MBBuildOptions* o)
             r -= 1;
             y += 1;
         }
+        mb_b_set(b, 0, y, 0, o->palette.light);
     }
 
-    /* Canopy pushed out from under the cabin. */
-    mb_b_ellipsoid(b, 0, deckY - 2, 0, (double)(radius + 2), 2, (double)(radius + 2),
-                   o->palette.nature, 0.45, false);
-    mb_b_ellipsoid(b, 0, deckY + 5, 0, (double)radius, 2, (double)radius,
-                   o->palette.nature, 0.5, false);
+    /* Canopy: a fringe under the deck and a crown well above the roof, so the
+     * hut itself stays visible instead of being swallowed by leaves. */
+    mb_b_ellipsoid(b, 0, deckY - 2, 0, (double)(radius + 2), 1,
+                   (double)(radius + 2), o->palette.nature, 0.55, false);
+    {
+        int roofTop = deckY + 3 + radius;
+        mb_b_ellipsoid(b, 0, roofTop + 1, 0, (double)(radius + 1), 2,
+                       (double)(radius + 1), o->palette.nature, 0.55, false);
+        mb_b_ellipsoid(b, 0, roofTop + 3, 0, (double)radius, 1,
+                       (double)radius, o->palette.nature, 0.65, false);
+    }
 
-    /* Ladder up the trunk. */
+    /* Ladder up the trunk and hanging lanterns under the deck. */
     for (int ly = 1; ly < deckY; ly++) {
         mb_sketch_set(&b->sketch, 1, ly, 0, "minecraft:ladder");
     }
-
-    /* Railing, leaving one gap for the ladder. */
-    mb_b_cylinder(b, 0, 0, (double)radius, deckY + 1, deckY + 1,
-                  "minecraft:iron_bars", 0, false, 0.0);
-    mb_sketch_remove(&b->sketch, 1, deckY + 1, 0);
+    mb_b_set(b, 0, deckY - 1, radius, o->palette.light);
+    mb_b_set(b, radius, deckY - 1, 0, o->palette.light);
+    mb_b_set(b, 0, deckY - 1, -radius, o->palette.light);
+    mb_b_set(b, -radius, deckY - 1, 0, o->palette.light);
 }
 
 /* ========================================================================== */
@@ -318,79 +499,57 @@ static void build_bridge(MBBuilder* b, const MBBuildOptions* o)
 {
     int w = o->width, d = o->depth;
     int span = w - 1;
-    int deckY = (int)ceil((double)span / 4.0);
+    if (span < 6) span = 6;
+
+    int deckY = o->height - 2;
     if (deckY < 3) deckY = 3;
+    if (deckY > 10) deckY = 10;
 
-    /* Deck. */
-    mb_b_rect(b, (MBRect){ 0, 0, span, d - 1 }, deckY, o->palette.floor);
-
-    /* Arch profile: a parabola-ish curve under the deck. */
+    /* Spandrels: solid above the arch curve, open underneath. The arch springs
+     * from both abutments and peaks two blocks below the deck. */
     for (int x = 0; x <= span; x++) {
         double t = (double)x / (double)span;
-        int arc = mb_js_round(sin(3.14159265358979323846 * t) * (double)deckY);
-        for (int y = deckY - 1; y >= deckY - 1 - arc + 1; y--) {
-            if (y < 0) break;
-            int base = deckY - 1 - arc;
-            int diff = y - base;
-            if (diff < 0) diff = -diff;
-            bool fill = (diff <= 1) || (arc <= 1);
-            if (!fill && y > 0) continue;
-            mb_b_box(b, x, y, 0, x, y, d - 1, o->palette.wall);
+        int openTop = mb_js_round((double)(deckY - 1) * sin(3.14159265358979323846 * t));
+        if (openTop > deckY - 2) openTop = deckY - 2;
+        if (openTop > 0) {
+            for (int y = openTop; y < deckY; y++) {
+                mb_b_box(b, x, y, 0, x, y, d - 1, o->palette.wall);
+            }
+            /* Voussoir course along the arch. */
+            mb_b_box(b, x, openTop - 1, 0, x, openTop - 1, d - 1, o->palette.accent);
         }
     }
 
-    /* Piers down to the ground at both ends and the middle. */
-    {
-        int piers[3] = { 0, span / 2, span };
-        for (int k = 0; k < 3; k++) {
-            int x = piers[k];
-            for (int px = x - 1; px <= x + 1; px++) {
-                if (px < 0 || px > span) continue;
-                for (int pz = 0; pz < d; pz++) {
-                    for (int y = 0; y < deckY; y++) {
-                        mb_sketch_set(&b->sketch, px, y, pz, "minecraft:stone_bricks");
-                    }
-                }
-            }
-        }
-    }
+    /* Abutments and wing walls. */
+    mb_b_box(b, -1, 0, 0, 0, deckY - 1, d - 1, "minecraft:stone_bricks");
+    mb_b_box(b, span, 0, 0, span + 1, deckY - 1, d - 1, "minecraft:stone_bricks");
 
-    /* Railings. */
-    {
-        int zs[2] = { 0, d - 1 };
-        for (int k = 0; k < 2; k++) {
-            int z = zs[k];
-            for (int x = 0; x <= span; x++) {
-                if (x % 3 == 0) {
-                    mb_b_set(b, x, deckY + 1, z, o->palette.frame);
-                    mb_b_set(b, x, deckY + 2, z, o->palette.frame);
+    /* Deck with one block of overhang on each side. */
+    mb_b_rect(b, (MBRect){ -1, -1, span + 1, d }, deckY, o->palette.floor);
+    mb_b_rect(b, (MBRect){ -1, -1, span + 1, d }, deckY - 1, o->palette.accent);
+
+    /* Railings on both sides: stone posts every three blocks, iron bars in
+     * between, and lanterns only at the ends and the middle. */
+    for (int side = 0; side < 2; side++) {
+        int z = side == 0 ? -1 : d;
+        for (int x = -1; x <= span + 1; x++) {
+            if (x % 3 == 0 || x == -1 || x == span + 1) {
+                mb_b_set(b, x, deckY + 1, z, o->palette.frame);
+                mb_b_set(b, x, deckY + 2, z, o->palette.frame);
+                mb_b_set(b, x, deckY + 3, z, o->palette.accent);
+                if (x == -1 || x == span + 1 || x == span / 2) {
+                    mb_b_set(b, x, deckY + 4, z, o->palette.light);
                 }
-                mb_b_set(b, x, deckY + 1, z,
-                         (x % 3 == 0) ? o->palette.frame : "minecraft:iron_bars");
-            }
-            for (int x = 0; x <= span; x++) {
+            } else {
+                mb_b_set(b, x, deckY + 1, z, "minecraft:iron_bars");
                 mb_b_set(b, x, deckY + 2, z, "minecraft:iron_bars");
             }
         }
     }
 
-    /* Lanterns on the piers. */
-    {
-        int xs[2] = { 1, span - 1 };
-        int zs[2] = { 0, d - 1 };
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < 2; j++) {
-                mb_b_set(b, xs[i], deckY + 3, zs[j], o->palette.light);
-            }
-        }
-    }
-
-    /* Under-deck lighting for the archway. */
-    {
-        int midX = span / 2;
-        mb_b_set(b, midX, deckY - 2, 0, o->palette.light);
-        mb_b_set(b, midX, deckY - 2, d - 1, o->palette.light);
-    }
+    /* Keystone lights under the deck ends. */
+    mb_b_set(b, span / 2, deckY - 2, 0, o->palette.light);
+    mb_b_set(b, span / 2, deckY - 2, d - 1, o->palette.light);
 }
 
 /* ========================================================================== */
@@ -399,43 +558,89 @@ static void build_bridge(MBBuilder* b, const MBBuildOptions* o)
 
 static void build_castle_wall(MBBuilder* b, const MBBuildOptions* o)
 {
-    int w = o->width, d = o->depth, h = o->height;
+    int w = o->width, d = o->depth;
     int span = w - 1;
-    int thickness = d < 3 ? d : 3;
-    if (thickness < 1) thickness = 1;
+    int h = o->height;
+    if (h < 6) h = 6;
+    if (h > 16) h = 16;
+
+    int thickness = d;
+    if (thickness < 2) thickness = 2;
+    if (thickness > 5) thickness = 5;
     int zEnd = thickness - 1;
 
-    /* Wall body with a battered (slightly thicker) footing. */
+    /* Wall body, battered footing and a string course at walkway level. */
     mb_b_box(b, 0, 0, 0, span, h - 1, zEnd, o->palette.wall);
-    mb_b_box(b, 0, 0, -1, span, 1, zEnd + 1, "minecraft:cobblestone");
+    mb_b_box(b, -1, 0, -1, span + 1, 1, zEnd + 1, "minecraft:cobblestone");
+    mb_b_box(b, 0, h - 1, 0, span, h - 1, zEnd, o->palette.accent);
 
-    /* Walkway on top. */
-    {
-        int zTop = zEnd - 1;
-        if (zTop < 1) zTop = 1;
-        mb_b_rect(b, (MBRect){ 1, 1, span - 1, zTop }, h, o->palette.floor);
-    }
-
-    /* Outer battlements (both long faces). */
+    /* Walkway between the two crenellated faces. */
+    mb_b_box(b, 0, h, 1, span, h, zEnd - 1, o->palette.floor);
     mb_b_crenellation(b, 0, 0, span, zEnd, h + 1, o->palette.wall);
 
-    /* Corner towers. */
+    /* Arrow slits on the outer face. */
+    for (int x = 3; x <= span - 3; x += 5) {
+        mb_b_set(b, x, h - 4, 0, o->palette.glass);
+        mb_b_set(b, x, h - 3, 0, o->palette.glass);
+        mb_b_set(b, x, h - 5, 0, o->palette.accent);
+        mb_b_set(b, x, h - 2, 0, o->palette.accent);
+    }
+
+    /* Gatehouse: arched gateway flanked by two towers, now with a proper
+     * bridge room above the gate. */
+    {
+        int gx = span / 2;
+        int gh = h - 2 < 5 ? h - 2 : 5;   /* gate height */
+
+        for (int x = gx - 1; x <= gx + 1; x++) {
+            mb_b_cut_opening(b, 'z', 0, zEnd, 0, gh, x, 0);
+        }
+        mb_b_box(b, gx - 1, gh + 1, 0, gx + 1, gh + 2, zEnd, o->palette.accent);
+        /* Open portcullis bars above the passage. */
+        for (int x = gx - 1; x <= gx + 1; x++) {
+            mb_b_set(b, x, gh, 0, "minecraft:iron_bars");
+            mb_b_set(b, x, gh, zEnd, "minecraft:iron_bars");
+        }
+        /* Stepped approach outside the gate. */
+        mb_b_box(b, gx - 2, 0, zEnd + 1, gx + 2, 1, zEnd + 2, "minecraft:stone_bricks");
+
+        /* Flanking towers sit clear of the gate opening. */
+        for (int side = 0; side < 2; side++) {
+            int tx = side == 0 ? gx - 3 : gx + 3;
+            int tz1 = -1, tz2 = zEnd + 1;
+            mb_b_box(b, tx - 1, 0, tz1, tx + 1, h + 3, tz2, o->palette.wall);
+            mb_b_box(b, tx - 1, 0, tz1, tx + 1, 1, tz2, "minecraft:cobblestone");
+            mb_b_box(b, tx - 1, h + 1, tz1, tx + 1, h + 1, tz2, o->palette.accent);
+            mb_b_crenellation(b, tx - 1, tz1, tx + 1, tz2, h + 4, o->palette.wall);
+            mb_b_set(b, tx, h + 1, (tz1 + tz2) / 2, o->palette.light);
+            mb_b_set(b, tx, gh, zEnd, o->palette.light);
+        }
+
+        /* Bridge room over the gate. */
+        mb_b_box(b, gx - 3, h + 1, -1, gx + 3, h + 2, zEnd + 1, o->palette.wall);
+        mb_b_crenellation(b, gx - 3, -1, gx + 3, zEnd + 1, h + 3, o->palette.wall);
+        mb_b_box(b, gx - 1, h + 2, zEnd + 1, gx + 1, h + 2, zEnd + 1, o->palette.accent);
+    }
+
+    /* Corner towers with machicolation and battlements. */
     {
         int xs[2] = { 0, span };
-        int r = d / 2 + 1;
-        if (r < 2) r = 2;
+        int r = thickness / 2 + 2;
+        if (r < 3) r = 3;
         for (int k = 0; k < 2; k++) {
             int x = xs[k];
-            mb_b_cylinder(b, (double)x, 1, (double)r, 0, h + 2, o->palette.wall, 1, false, 0.0);
-            mb_b_cylinder(b, (double)x, 1, (double)r, 0, 1, "minecraft:stone_bricks", 1, true, 0.0);
-            mb_b_cylinder(b, (double)x, 1, (double)r, h + 1, h + 2, o->palette.floor, 1, false, 0.0);
-            mb_b_ring_merlons(b, (double)x, 1, (double)r, h + 3, h + 3, o->palette.wall);
-            mb_b_set(b, x, h + 1, 1, o->palette.light);
+            mb_b_cylinder(b, (double)x, 1, (double)r, 0, h + 4, o->palette.wall, 1, false, 0.0);
+            mb_b_cylinder(b, (double)x, 1, (double)r, 0, 1, "minecraft:cobblestone", 1, true, 0.0);
+            mb_b_cylinder(b, (double)x, 1, (double)r + 0.7, h + 2, h + 2,
+                          o->palette.accent, 1, false, 0.0);
+            mb_b_cylinder(b, (double)x, 1, (double)r, h + 3, h + 3, o->palette.floor, 1, false, 0.0);
+            mb_b_ring_merlons(b, (double)x, 1, (double)r, h + 5, h + 5, o->palette.wall);
+            mb_b_set(b, x, h + 3, 1, o->palette.light);
         }
     }
 
-    /* Wall-mounted torches along the walkway. */
-    for (int x = 3; x < span - 2; x += 5) {
+    /* Walkway torches. */
+    for (int x = 4; x < span - 2; x += 7) {
         mb_b_set(b, x, h + 1, zEnd, o->palette.light);
     }
 }

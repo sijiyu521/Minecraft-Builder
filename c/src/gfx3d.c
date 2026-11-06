@@ -181,7 +181,9 @@ void mb_camera_frame(MBCamera* c, const MBBuildResult* r)
 void mb_camera_default(MBCamera* c, const MBBuildResult* r)
 {
     memset(c, 0, sizeof(*c));
-    c->yaw   = 0.62;      /* about 36 degrees */
+    /* Lights and doors are authored on the +X/+Z faces; this yaw keeps those
+     * sunlit faces toward the viewer, with a three-quarter view of the roof. */
+    c->yaw   = 3.7616;    /* about 215 degrees, looking at +X/+Z */
     c->pitch = -0.40;     /* looking down at the roof */
     c->fov   = 0.90;
     mb_camera_frame(c, r);
@@ -610,9 +612,9 @@ static void emit_quad(MBFramebuffer* fb, const Raster* R,
 static void draw_ground(MBFramebuffer* fb, const Raster* R,
                         double cx, double cz, double extent)
 {
-    uint32_t plane = rgb(0x1E, 0x21, 0x28);
-    uint32_t minor = rgb(0x2B, 0x30, 0x3A);
-    uint32_t major = rgb(0x41, 0x49, 0x58);
+    uint32_t plane = rgb(0x2A, 0x2F, 0x39);
+    uint32_t minor = rgb(0x37, 0x3E, 0x4B);
+    uint32_t major = rgb(0x4C, 0x57, 0x69);
 
     double x0 = cx - extent, x1 = cx + extent;
     double z0 = cz - extent, z1 = cz + extent;
@@ -787,9 +789,9 @@ static uint32_t shade_face(uint32_t base, int face, bool emissive)
 {
     double d = FACE_N[face].x * LIGHT.x + FACE_N[face].y * LIGHT.y + FACE_N[face].z * LIGHT.z;
     if (d < 0.0) d = 0.0;
-    double k = FACE_K[face] * (0.78 + 0.30 * d);
-    if (emissive) k *= 1.30;
-    if (k > 1.55) k = 1.55;
+    double k = FACE_K[face] * (0.92 + 0.36 * d);
+    if (emissive) k *= 1.35;
+    if (k > 1.95) k = 1.95;
     return scale_rgb(base, k);
 }
 
@@ -845,7 +847,7 @@ static void block_faces(MBFramebuffer* fb, Raster* R, const MBVoxel* v,
 void mb_render_scene(Arena* a, MBFramebuffer* fb, const MBBuildResult* r,
                      const MBCamera* cam, const MBSceneOptions* opt)
 {
-    mb_fb_clear(fb, rgb(0x12, 0x14, 0x18), rgb(0x1B, 0x1E, 0x24));
+    mb_fb_clear(fb, rgb(0x20, 0x28, 0x35), rgb(0x2C, 0x34, 0x40));
 
     Raster solid;
     raster_init(&solid, cam, fb, true, 1.0);
@@ -867,7 +869,7 @@ void mb_render_scene(Arena* a, MBFramebuffer* fb, const MBBuildResult* r,
         double hue = r->size.x > r->size.z ? (double)r->size.x : (double)r->size.z;
         solid.fogStart = d + hue * 0.6;
         solid.fogEnd   = solid.fogStart + extent * 1.6;
-        solid.fogColor = rgb(0x1B, 0x1E, 0x24);
+        solid.fogColor = rgb(0x2C, 0x34, 0x40);
     }
 
     if (opt->showGrid) {

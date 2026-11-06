@@ -249,12 +249,12 @@ typedef struct {
 } PlanFixture;
 
 static const PlanFixture FIXTURES[] = {
-    { "modern-house", "modern",     15, 11,  5, 2, 20260101u, 17, 13, 17, 1416, 9 },
-    { "cabin",        "rustic",     11,  9,  4, 1, 20260101u, 13, 12, 12,  591, 8 },
-    { "castle-tower", "medieval",   11, 11, 20, 0, 20260101u, 11, 11, 24,  960, 7 },
-    { "treehouse",    "fantasy",    13, 13,  6, 1, 20260101u, 15, 15, 15,  870, 7 },
-    { "bridge",       "industrial", 21,  5,  0, 0, 20260101u, 21,  5,  9,  438, 5 },
-    { "castle-wall",  "mossy",      25,  3,  7, 0, 20260101u, 29,  5, 12,  971, 4 },
+    { "modern-house", "modern",     15, 11,  5, 2, 20260101u, 21, 14, 14, 1287, 11 },
+    { "cabin",        "rustic",     11,  9,  4, 1, 20260101u, 13, 13, 15,  613, 10 },
+    { "castle-tower", "medieval",   11, 11, 20, 0, 20260101u, 11, 12, 27, 1253, 9 },
+    { "treehouse",    "fantasy",    13, 13,  6, 1, 20260101u, 15, 15, 17,  956, 9 },
+    { "bridge",       "industrial", 21,  5,  0, 0, 20260101u, 23,  7,  8,  646, 6 },
+    { "castle-wall",  "mossy",      25,  3,  7, 0, 20260101u, 33,  9, 14, 1383, 7 },
 };
 
 #define FIXTURE_COUNT ((int)(sizeof(FIXTURES) / sizeof(FIXTURES[0])))

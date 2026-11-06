@@ -52,8 +52,8 @@ static const char* kw_style_mossy[] = { "废墟", "苔", "古老", "遗迹", "�
 static const MBStyle MB_STYLES_SRC[] = {
     {
         "modern", "现代简约", kw_style_modern, NSTYLE(kw_style_modern),
-        STYLE_PALETTE("minecraft:white_concrete", "minecraft:gray_concrete",
-                      "minecraft:smooth_stone", "minecraft:birch_planks",
+        STYLE_PALETTE("minecraft:white_concrete", "minecraft:light_gray_concrete",
+                      "minecraft:gray_concrete", "minecraft:birch_planks",
                       "minecraft:light_gray_concrete", "minecraft:glass",
                       "minecraft:sea_lantern", "minecraft:oak_leaves"),
     },
@@ -274,6 +274,30 @@ static MBBuildResult* finalize(Arena* a, const FinalizeInput* in,
 /* generation (model plan -> deterministic voxels)                            */
 /* ========================================================================== */
 
+static int color_luma(const char* material)
+{
+    uint32_t c = mb_material_color(material ? material : "");
+    int r = (int)((c >> 16) & 0xFFu);
+    int g = (int)((c >> 8) & 0xFFu);
+    int b = (int)(c & 0xFFu);
+    return (r * 299 + g * 587 + b * 114) / 1000;
+}
+
+static const char* contrast_slot(const char* candidate, const char* wall,
+                                 const char* styleDefault, const char* harsh, int minGap)
+{
+    if (!candidate || !wall) return candidate;
+    int gap = color_luma(candidate) - color_luma(wall);
+    if (gap < 0) gap = -gap;
+    if (gap >= minGap) return candidate;
+    if (styleDefault) {
+        int styleGap = color_luma(styleDefault) - color_luma(wall);
+        if (styleGap < 0) styleGap = -styleGap;
+        if (styleGap >= minGap) return styleDefault;
+    }
+    return harsh;
+}
+
 MBBuildResult* mb_generate(Arena* a, const char* rawPrompt, uint32_t seed,
                            const MBLlmPlan* plan, const MBLlmTrace* trace)
 {
@@ -293,6 +317,16 @@ MBBuildResult* mb_generate(Arena* a, const char* rawPrompt, uint32_t seed,
     const char* glass  = plan->palette.glass  ? plan->palette.glass  : style->palette.glass;
     const char* light  = plan->palette.light  ? plan->palette.light  : style->palette.light;
     const char* nature = plan->palette.nature ? plan->palette.nature : style->palette.nature;
+
+    /* Keep the palette legible. Models sometimes paint wall, roof and trim in
+     * near-identical whites/greys, producing an undifferentiated box; when the
+     * luminance gap is too small, borrow the style's contrasting slot. */
+    roof = contrast_slot(roof, wall, style->palette.roof,
+                         "minecraft:dark_oak_planks", 55);
+    frame = contrast_slot(frame, wall, style->palette.frame,
+                          "minecraft:dark_oak_planks", 40);
+    accent = contrast_slot(accent, wall, style->palette.accent,
+                           "minecraft:gray_concrete", 35);
 
     /* Same jitter trick as the web app so "换一个变体" stays meaningful. */
     uint32_t rng = seed;
