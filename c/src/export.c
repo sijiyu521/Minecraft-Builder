@@ -145,6 +145,10 @@ char* mb_export_json(Arena* a, const MBBuildResult* r)
         json_str(&b, r->palette[i]);
         mb_sb_puts(&b, ",\n      \"name\": ");
         json_str(&b, m->name);
+        mb_sb_puts(&b, ",\n      \"category\": ");
+        json_str(&b, mb_material_category_name(m->category));
+        mb_sb_puts(&b, ",\n      \"desc\": ");
+        json_str(&b, m->desc);
         mb_sb_printf(&b, ",\n      \"color\": \"#%06x\"\n    }", m->color & 0xFFFFFFu);
     }
     mb_sb_puts(&b, r->paletteCount ? "\n  ],\n" : "],\n");
@@ -152,9 +156,16 @@ char* mb_export_json(Arena* a, const MBBuildResult* r)
     mb_sb_printf(&b, "  \"stats\": {\n    \"total\": %d,\n    \"byMaterial\": [",
                  r->total);
     for (int i = 0; i < r->byMaterialCount; i++) {
+        const MBMaterial* m = mb_material(r->byMaterial[i].id);
         mb_sb_puts(&b, i ? ",\n" : "\n");
         mb_sb_puts(&b, "      {\n        \"id\": ");
         json_str(&b, r->byMaterial[i].id);
+        mb_sb_puts(&b, ",\n        \"name\": ");
+        json_str(&b, m->name);
+        mb_sb_puts(&b, ",\n        \"category\": ");
+        json_str(&b, mb_material_category_name(m->category));
+        mb_sb_puts(&b, ",\n        \"desc\": ");
+        json_str(&b, m->desc);
         mb_sb_printf(&b, ",\n        \"count\": %d\n      }", r->byMaterial[i].count);
     }
     mb_sb_puts(&b, r->byMaterialCount ? "\n    ]\n  },\n" : "]\n  },\n");
@@ -225,16 +236,18 @@ char* mb_export_csv(Arena* a, const MBBuildResult* r)
 {
     SBuf b;
     mb_sb_init(&b, a);
-    mb_sb_puts(&b, "方块ID,中文名,数量,占总量比例\n");
+    mb_sb_puts(&b, "方块ID,中文名,分类,数量,占总量比例,说明\n");
 
     for (int i = 0; i < r->byMaterialCount; i++) {
         const MBMaterialUsage* u = &r->byMaterial[i];
+        const MBMaterial* m = mb_material(u->id);
         double ratio = r->total == 0 ? 0.0 : ((double)u->count / (double)r->total) * 100.0;
-        mb_sb_printf(&b, "%s,%s,%d,%.2f%%\n",
-                     u->id, mb_material(u->id)->name, u->count, ratio);
+        mb_sb_printf(&b, "%s,%s,%s,%d,%.2f%%,%s\n",
+                     u->id, m->name, mb_material_category_name(m->category),
+                     u->count, ratio, m->desc);
     }
 
-    mb_sb_printf(&b, "合计,,%d,100.00%%", r->total);
+    mb_sb_printf(&b, "合计,,,%d,100.00%%,", r->total);
     return mb_sb_done(&b);
 }
 
@@ -270,10 +283,13 @@ char* mb_export_markdown(Arena* a, const MBBuildResult* r)
     mb_sb_printf(&b, "- 方块总数: %d\n\n", r->total);
 
     mb_sb_puts(&b, "## 材料清单\n\n");
-    mb_sb_puts(&b, "| 方块 | 中文名 | 数量 |\n| --- | --- | --- |\n");
+    mb_sb_puts(&b, "| 方块 | 中文名 | 分类 | 数量 | 说明 |\n| --- | --- | --- | --- | --- |\n");
     for (int i = 0; i < r->byMaterialCount; i++) {
         const MBMaterialUsage* u = &r->byMaterial[i];
-        mb_sb_printf(&b, "| `%s` | %s | %d |\n", u->id, mb_material(u->id)->name, u->count);
+        const MBMaterial* m = mb_material(u->id);
+        mb_sb_printf(&b, "| `%s` | %s | %s | %d | %s |\n",
+                     u->id, m->name, mb_material_category_name(m->category),
+                     u->count, m->desc);
     }
     mb_sb_putc(&b, '\n');
 

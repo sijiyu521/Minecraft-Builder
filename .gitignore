@@ -20,3 +20,6 @@ logs
 *.log
 *.local
 
+
+# Local Minecraft textures extracted by tools/extract-vanilla-textures.ps1 (Mojang assets, never committed)
+/c/textures/

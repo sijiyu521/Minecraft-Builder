@@ -678,7 +678,8 @@ static void test_exporters(Arena* a, const MBBuildResult* r)
           strstr(md, "| \xe6\x96\xb9\xe5\x9d\x97 |") != NULL, "missing table header");
     check("markdown names the build", strstr(md, r->name) != NULL, "missing name");
 
-    snprintf(detail, sizeof detail, "\xe5\x90\x88\xe8\xae\xa1,,%d,100.00%%", r->total);
+    snprintf(detail, sizeof detail, "\xe5\x90\x88\xe8\xae\xa1,,,%d,100.00%%,",
+             r->total);
     check("CSV ends with the 100% total row", csv && strstr(csv, detail) != NULL, detail);
 
     expect_str("slugify lowercases and hyphenates", mb_slugify(a, "Modern Villa 15x11"),
@@ -794,6 +795,30 @@ static void test_helpers(Arena* a)
                "#ff00ff");
     check("materials carry a display name",
           mb_material_name("minecraft:stone_bricks")[0] != '\0', "empty name");
+
+    /* Every catalogue entry must have a usable one-line description and a
+     * category label: the UI tooltip, the exports and the README table all
+     * depend on them. */
+    {
+        bool all_described = true;
+        bool all_categorised = true;
+        for (int i = 0; i < MB_MATERIAL_COUNT; i++) {
+            const MBMaterial* m = &MB_MATERIALS[i];
+            if (!m->desc || !m->desc[0]) all_described = false;
+            if (!mb_material_category_name(m->category)[0]) all_categorised = false;
+        }
+        check("every material has a description", all_described, "empty desc");
+        check("every category has a label", all_categorised, "empty category label");
+    }
+    check("an unknown material falls back to an empty description",
+          mb_material_desc("unobtainium")[0] == '\0', "unexpected desc");
+
+    /* Without an extracted vanilla pack every lookup must fail gracefully. */
+    {
+        unsigned char rgb[16 * 16 * 3];
+        check("texture lookup without a pack fails cleanly",
+              !mb_textures_load("__no_such_block__", rgb), "unexpected texture");
+    }
 }
 
 /* ========================================================================== */

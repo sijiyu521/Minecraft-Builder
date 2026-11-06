@@ -82,6 +82,8 @@ typedef struct {
     bool dragging;
     bool inputReady;
     bool inFrame;              /* true between BeginDrawing() and EndDrawing() */
+    int hoverMaterial;         /* index into result->byMaterial, -1 = none */
+    bool statusIsError;        /* status line is an error, not a hint */
     Vector2 lastMouse;
 } GuiApp;
 
@@ -369,8 +371,15 @@ static void set_status(GuiApp* app, const char* text)
     if (n >= sizeof(app->status)) n = sizeof(app->status) - 1;
     memcpy(app->status, text, n);
     app->status[n] = '\0';
+    app->statusIsError = false;
     font_add_text(app, app->status);
     font_reload(app);
+}
+
+static void set_status_error(GuiApp* app, const char* text)
+{
+    set_status(app, text);
+    app->statusIsError = true;
 }
 
 static void utf8_backspace(char* text)
@@ -456,13 +465,13 @@ static void frame_camera(GuiApp* app)
 static bool model_config_ready(GuiApp* app)
 {
     if (!app->cfg.baseUrl[0] || !app->cfg.model[0]) {
-        set_status(app, "请先在模型设置中填写服务地址和模型名");
+        set_status_error(app, "请先在模型设置中填写服务地址和模型名");
         return false;
     }
     bool keyOptional = app->preset >= 0 && app->preset < MB_LLM_PRESET_COUNT
                        && MB_LLM_PRESETS[app->preset].keyOptional;
     if (!app->cfg.apiKey[0] && !keyOptional) {
-        set_status(app, "请先在模型设置中填写 API Key");
+        set_status_error(app, "请先在模型设置中填写 API Key");
         return false;
     }
     return true;
@@ -491,7 +500,7 @@ static void regenerate(GuiApp* app)
 
     MBLlmPlanOutcome outcome = mb_llm_plan(&app->plan, app->prompt, &app->cfg, NULL, NULL);
     if (!outcome.ok) {
-        set_status(app, outcome.error.message);
+        set_status_error(app, outcome.error.message);
         return;
     }
 
@@ -502,7 +511,7 @@ static void regenerate(GuiApp* app)
     app->result = mb_generate(&app->model, app->prompt, mb_hash_string(app->prompt),
                               &app->cachedPlan, &app->cachedTrace);
     if (!app->result) {
-        set_status(app, "建筑生成失败");
+        set_status_error(app, "建筑生成失败");
         return;
     }
 
@@ -518,7 +527,7 @@ static void regenerate(GuiApp* app)
 static void regenerate_variant(GuiApp* app)
 {
     if (!app->hasPlan) {
-        set_status(app, "请先用大模型生成一次建筑");
+        set_status_error(app, "请先用大模型生成一次建筑");
         return;
     }
 
@@ -532,7 +541,7 @@ static void regenerate_variant(GuiApp* app)
     app->result = mb_generate(&app->model, app->prompt, seed,
                               &app->cachedPlan, &app->cachedTrace);
     if (!app->result) {
-        set_status(app, "建筑生成失败");
+        set_status_error(app, "建筑生成失败");
         return;
     }
 
@@ -593,7 +602,7 @@ static bool save_file(const char* path, const char* text)
 
 static void export_selected(GuiApp* app)
 {
-    if (!app->result) { set_status(app, "先生成一个建筑方案"); return; }
+    if (!app->result) { set_status_error(app, "先生成一个建筑方案"); return; }
     Arena temp;
     mb_arena_init(&temp);
     char* text = NULL;
@@ -610,20 +619,21 @@ static void export_selected(GuiApp* app)
     bool ok = text && save_file(path, text);
     char msg[STATUS_CAP];
     snprintf(msg, sizeof(msg), ok ? "已导出到 %s" : "写入 %s 失败", path);
-    set_status(app, msg);
+    if (ok) set_status(app, msg);
+    else set_status_error(app, msg);
     mb_arena_destroy(&temp);
 }
 
 static void test_connection(GuiApp* app)
 {
     if (!app->cfg.baseUrl[0] || !app->cfg.model[0]) {
-        set_status(app, "请先填写服务地址和模型名");
+        set_status_error(app, "请先填写服务地址和模型名");
         return;
     }
     Arena temp;
     mb_arena_init(&temp);
     MBLlmPlanOutcome outcome = mb_llm_ping(&temp, &app->cfg);
-    if (!outcome.ok) set_status(app, outcome.error.message);
+    if (!outcome.ok) set_status_error(app, outcome.error.message);
     else set_status(app, outcome.result.raw ? outcome.result.raw : "服务连接成功");
     mb_arena_destroy(&temp);
 }
@@ -703,9 +713,10 @@ static Rectangle draw_sidebar(GuiApp* app, int height)
     draw_text("拖动预览旋转 · 滚轮缩放", panel.x + 17, keyY + 62, 13, UI_SOFT);
 
     float statusY = panel.y + panel.height - 74;
+    Color statusBg = app->statusIsError ? (Color){ 67, 38, 43, 255 } : UI_RAISED;
     DrawRectangleRounded((Rectangle){ panel.x + 12, statusY, panel.width - 24, 60 }, 0.08f, 8,
-                         app->status[0] ? (app->result ? UI_RAISED : (Color){ 67, 38, 43, 255 }) : UI_BG);
-    Color statusColor = app->result ? UI_SOFT : UI_RED;
+                         app->status[0] ? statusBg : UI_BG);
+    Color statusColor = app->statusIsError ? UI_RED : UI_SOFT;
     draw_text_clipped(app->status[0] ? app->status : "用大模型规划建筑",
                       panel.x + 22, statusY + 13, 13, panel.width - 44, statusColor);
     return panel;
@@ -714,6 +725,7 @@ static Rectangle draw_sidebar(GuiApp* app, int height)
 static void draw_materials(GuiApp* app, Rectangle panel)
 {
     draw_card(panel, "材料清单", "按用量排序");
+    app->hoverMaterial = -1;
     if (!app->result) {
         draw_text("生成后显示用量", panel.x + 18, panel.y + 76, 14, UI_MUTED);
         return;
@@ -725,12 +737,15 @@ static void draw_materials(GuiApp* app, Rectangle panel)
         ? app->result->byMaterialCount : visibleRows;
     float y = panel.y + 78;
     float barW = panel.width - 106;
+    Vector2 mouse = GetMousePosition();
     for (int i = 0; i < limit; i++) {
         const MBMaterialUsage* u = &app->result->byMaterial[i];
         const MBMaterial* material = mb_material(u->id);
         float pct = app->result->total > 0 ? (float)u->count / (float)app->result->total : 0.0f;
         char count[24];
         snprintf(count, sizeof(count), "%d", u->count);
+        Rectangle row = { panel.x + 10, y - 5, panel.width - 20, 42 };
+        if (app->inputReady && CheckCollisionPointRec(mouse, row)) app->hoverMaterial = i;
         DrawRectangleRounded((Rectangle){ panel.x + 16, y + 5, 10, 10 }, 0.25f, 4,
                              (Color){ (unsigned char)(material->color >> 16),
                                       (unsigned char)(material->color >> 8),
@@ -750,6 +765,43 @@ static void draw_materials(GuiApp* app, Rectangle panel)
         snprintf(more, sizeof(more), "+%d 种材料", app->result->byMaterialCount - limit);
         draw_text(more, panel.x + 18, y, 13, UI_MUTED);
     }
+}
+
+/* Hover tooltip for the material list: name, category, count and the one-line
+ * description from the catalogue. Drawn last so it floats above every card. */
+static void draw_material_tooltip(GuiApp* app, int width, int height)
+{
+    if (!app->result || app->hoverMaterial < 0
+        || app->hoverMaterial >= app->result->byMaterialCount) return;
+
+    const MBMaterialUsage* u = &app->result->byMaterial[app->hoverMaterial];
+    const MBMaterial* m = mb_material(u->id);
+    const char* category = mb_material_category_name(m->category);
+
+    char title[160];
+    snprintf(title, sizeof(title), "%s  ·  %s  ·  %d 块", m->name, category, u->count);
+
+    float size = 13.0f;
+    Vector2 titleSize = MeasureTextEx(GuiGetFont(), title, size, 1.0f);
+    Vector2 descSize = MeasureTextEx(GuiGetFont(), m->desc, size, 1.0f);
+    float pad = 12.0f;
+    float lineH = 19.0f;
+    float boxW = fmaxf(titleSize.x, descSize.x) + pad * 2;
+    if (boxW > (float)width - 24.0f) boxW = (float)width - 24.0f;
+    if (boxW < 220.0f) boxW = 220.0f;
+    float boxH = lineH * 2 + pad * 2;
+
+    Vector2 mouse = GetMousePosition();
+    float x = mouse.x + 18.0f;
+    float y = mouse.y + 18.0f;
+    if (x + boxW > (float)width - 8.0f) x = (float)width - boxW - 8.0f;
+    if (y + boxH > (float)height - 8.0f) y = mouse.y - boxH - 12.0f;
+
+    Rectangle box = { x, y, boxW, boxH };
+    DrawRectangleRounded(box, 0.12f, 8, UI_CARD);
+    DrawRectangleRoundedLinesEx(box, 0.12f, 8, 1.0f, UI_BORDER);
+    draw_text_clipped(title, x + pad, y + pad - 2, size, boxW - pad * 2, UI_TEXT);
+    draw_text_clipped(m->desc, x + pad, y + pad + lineH - 2, size, boxW - pad * 2, UI_SOFT);
 }
 
 static Rectangle central_bounds(int width, int height, bool hasRightPanel)
@@ -979,7 +1031,8 @@ static void draw_settings(GuiApp* app, Rectangle bounds)
     if (GuiButton(ping, "测试连接")) test_connection(app);
     Rectangle save = { x + 166, sliderY + 88, 140, 40 };
     if (GuiButton(save, "保存设置")) {
-        set_status(app, mb_config_save(&app->cfg) ? "设置已保存" : "设置保存失败");
+        if (mb_config_save(&app->cfg)) set_status(app, "设置已保存");
+        else set_status_error(app, "设置保存失败");
     }
 }
 
@@ -1057,7 +1110,10 @@ int mb_gui_run(const char* initialPrompt)
     gui_style();
     for (int cp = 32; cp <= 126; cp++) app.fontCodepoints[app.fontCodepointCount++] = cp;
     font_add_visible_text(&app);
-    for (int i = 0; i < MB_MATERIAL_COUNT; i++) font_add_text(&app, MB_MATERIALS[i].name);
+    for (int i = 0; i < MB_MATERIAL_COUNT; i++) {
+        font_add_text(&app, MB_MATERIALS[i].name);
+        font_add_text(&app, MB_MATERIALS[i].desc);
+    }
     for (int i = 0; i < MB_STRUCTURE_COUNT; i++) {
         font_add_text(&app, MB_STRUCTURES[i].label);
         font_add_text(&app, MB_STRUCTURES[i].hint);
@@ -1065,10 +1121,15 @@ int mb_gui_run(const char* initialPrompt)
     for (int i = 0; i < MB_STYLE_COUNT; i++) font_add_text(&app, MB_STYLES[i].label);
     font_reload(&app);
 
+    /* Optional local vanilla texture pack; never bundled with the repo. */
+    mb_textures_autodetect();
+    app.hoverMaterial = -1;
+
     /* Do not generate on launch: a model call costs tokens and a first-run user
      * may not have configured the endpoint yet. The empty viewport tells them
      * what to do instead. */
-    set_status(&app, "填写描述后点击生成建筑");
+    if (mb_textures_dir()) set_status(&app, "已加载原版材质 · 点击生成建筑");
+    else                  set_status(&app, "填写描述后点击生成建筑");
     while (!WindowShouldClose()) {
         if (app.fontDirty) font_reload(&app);
         int width = GetScreenWidth();
@@ -1110,6 +1171,7 @@ int mb_gui_run(const char* initialPrompt)
         else if (app.tab == GUI_VIEW_EXPORT) draw_export(&app, central);
         else draw_settings(&app, central);
         draw_right_panel(&app, width, height);
+        draw_material_tooltip(&app, width, height);
 
         EndDrawing();
         app.inFrame = false;

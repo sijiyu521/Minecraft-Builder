@@ -213,7 +213,11 @@ void mb_scene_default(MBSceneOptions* o)
 #define MB_TEX     16
 #define MB_TEX_MUL 128
 
-typedef struct { unsigned char m[MB_TEX * MB_TEX * 3]; } MBTex;
+typedef struct {
+    unsigned char m[MB_TEX * MB_TEX * 3];
+    uint32_t base;       /* unshaded material colour, used by real textures */
+    bool     absolute;   /* true = m[] already holds RGB texels, not multipliers */
+} MBTex;
 
 static unsigned int mix32(unsigned int x)
 {
@@ -273,6 +277,8 @@ static void tex_gen(MBTex* t, const MBMaterial* m)
 {
     TexKind kind = tex_kind(m);
     unsigned int salt = mb_hash_string(m->id);
+    t->base = m->color;
+    t->absolute = false;
 
     for (int y = 0; y < MB_TEX; y++) {
         for (int x = 0; x < MB_TEX; x++) {
@@ -390,6 +396,18 @@ static uint32_t tex_shade(const MBTex* t, uint32_t base, int uvA, int uvB,
     ty = ((ty % MB_TEX) + MB_TEX) % MB_TEX;
 
     const unsigned char* m = t->m + (ty * MB_TEX + tx) * 3;
+
+    if (t->absolute) {
+        /* Real vanilla texel: keep its colour, apply only the lighting ratio
+         * between the shaded face colour and the unshaded material colour. */
+        double lr = chan(t->base, 16) ? chan(base, 16) / (double)chan(t->base, 16) : 1.0;
+        double lg = chan(t->base, 8)  ? chan(base, 8)  / (double)chan(t->base, 8)  : 1.0;
+        double lb = chan(t->base, 0)  ? chan(base, 0)  / (double)chan(t->base, 0)  : 1.0;
+        return rgb(clampi((int)(m[0] * lr + 0.5), 0, 255),
+                   clampi((int)(m[1] * lg + 0.5), 0, 255),
+                   clampi((int)(m[2] * lb + 0.5), 0, 255));
+    }
+
     double kr = m[0] / (double)MB_TEX_MUL;
     double kg = m[1] / (double)MB_TEX_MUL;
     double kb = m[2] / (double)MB_TEX_MUL;
@@ -708,6 +726,18 @@ typedef struct {
     MBTex* pool;          /* one synthesised texture per palette slot */
 } ScenePal;
 
+/* Try the optional vanilla texture pack first; fall back to the procedural
+ * texture when the user has not extracted one. */
+static bool tex_real(MBTex* t, const MBMaterial* m)
+{
+    unsigned char rgb[MB_TEX * MB_TEX * 3];
+    if (!mb_textures_load(m->id + 10, rgb)) return false;
+    memcpy(t->m, rgb, sizeof(t->m));
+    t->base = m->color;
+    t->absolute = true;
+    return true;
+}
+
 static int pal_slot(ScenePal* p, const char* id)
 {
     /* The build hands out material strings from the arena, so most of the time
@@ -724,7 +754,7 @@ static int pal_slot(ScenePal* p, const char* id)
     e->tex   = &p->pool[idx];
     e->glass = (m->category == MB_CAT_GLASS);
     e->light = (m->light != 0);
-    tex_gen(&p->pool[idx], m);
+    if (!tex_real(&p->pool[idx], m)) tex_gen(&p->pool[idx], m);
     return idx;
 }
 

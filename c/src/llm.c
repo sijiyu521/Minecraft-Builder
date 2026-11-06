@@ -91,8 +91,9 @@ static void catalogue_append(SBuf* b)
 {
     for (int i = 0; i < MB_MATERIAL_COUNT; i++) {
         const char* id = MB_MATERIALS[i].id;
-        if (i) mb_sb_puts(b, "、");
-        mb_sb_printf(b, "%s=%s", id + 10 /* "minecraft:" */, MB_MATERIALS[i].name);
+        if (i) mb_sb_puts(b, "；");
+        mb_sb_printf(b, "%s=%s（%s）", id + 10 /* "minecraft:" */,
+                     MB_MATERIALS[i].name, MB_MATERIALS[i].desc);
     }
 }
 

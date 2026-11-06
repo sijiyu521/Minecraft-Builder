@@ -178,6 +178,7 @@ typedef enum {
 typedef struct {
     const char*        id;      /* full id, e.g. minecraft:stone_bricks */
     const char*        name;    /* Chinese display name */
+    const char*        desc;    /* one-line description: look + typical use */
     uint32_t           color;   /* 0xRRGGBB approximation of the in-game texture */
     MBMaterialCategory category;
     int                light;   /* 0 = does not emit light */
@@ -190,7 +191,28 @@ extern const int        MB_MATERIAL_COUNT;
 const MBMaterial* mb_material(const char* idOrShort);
 bool              mb_material_known(const char* idOrShort);
 const char*       mb_material_name(const char* id);
+const char*       mb_material_desc(const char* id);
+const char*       mb_material_category_name(MBMaterialCategory category);
 uint32_t          mb_material_color(const char* id);
+
+/* ========================================================================== */
+/* optional vanilla texture pack (loaded at runtime from the user's copy)     */
+/* ========================================================================== */
+/*
+ * Minecraft's textures are Mojang assets: they are never shipped with this
+ * repository.  If the user extracts their own resource pack into a folder of
+ * 16x16 block PNGs, the software renderer uses those instead of the procedural
+ * fallback.  Both calls are cheap and safe to call repeatedly.
+ *
+ *   mb_textures_set_dir(dir)  accepts the pack root, .../assets/minecraft/
+ *                             textures/block, or any folder holding the PNGs.
+ *   mb_textures_autodetect()  looks next to the executable, in the working
+ *                             directory and in the user's .minecraft packs.
+ */
+bool        mb_textures_set_dir(const char* dir);
+void        mb_textures_autodetect(void);
+const char* mb_textures_dir(void);
+bool        mb_textures_load(const char* shortId, unsigned char* rgb16x16x3);
 
 /* ========================================================================== */
 /* geometry primitives                                                        */

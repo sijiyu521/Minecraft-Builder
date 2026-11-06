@@ -610,6 +610,8 @@ static void draw_body_settings(SBuf* b, App* app, int cols, int bodyRows)
     int used = 0;
     card_title(b, "大模型接入", cols); used++;
     card_kv(b, "提示", "填好地址与模型名后，按 1 回到 3D 预览，再按 Enter 生成。", cols); used++;
+    card_kv(b, "材质", mb_textures_dir() ? "Minecraft 原版材质包（本地加载）"
+                                         : "程序生成贴图（未检测到原版材质）", cols); used++;
     card_blank(b, cols); used++;
 
     for (int i = 0; i < SET_COUNT && used < bodyRows; i++) {
@@ -1106,6 +1108,7 @@ static void cli_usage(void)
         "  mb --tui              启动终端界面\n"
         "  mb --preview [提示词]  调用模型规划并打开 3D 预览窗口\n"
         "  mb --shot 文件.bmp    调用模型规划、离屏渲染一帧并写出 BMP\n"
+        "  mb --textures 目录    使用本机 Minecraft 原版方块材质（16x16 PNG 目录或资源包）\n"
         "  mb --size 1280x720    指定 --shot 的输出尺寸，默认 960x600\n"
         "  mb --yaw 45           覆盖相机水平角（度，仅对 --shot 有效）\n"
         "  mb --pitch -28        覆盖相机俯仰角（度，仅对 --shot 有效）\n"
@@ -1210,6 +1213,7 @@ int main(int argc, char** argv)
     /* --- command line ---------------------------------------------------- */
     const char* prompt = NULL;
     const char* shot   = NULL;
+    const char* textures = NULL;
     bool preview = false;
     bool tui = false;
     int  shotW = 960, shotH = 600;
@@ -1240,9 +1244,19 @@ int main(int argc, char** argv)
             }
         } else if (strcmp(a, "--prompt") == 0 && i + 1 < argc) {
             prompt = argv[++i];
+        } else if (strcmp(a, "--textures") == 0 && i + 1 < argc) {
+            textures = argv[++i];
         } else if (a[0] != '-') {
             prompt = a;      /* a bare argument is the prompt */
         }
+    }
+
+    if (textures) {
+        if (!mb_textures_set_dir(textures)) {
+            fprintf(stderr, "材质目录里没找到 16x16 方块 PNG：%s\n", textures);
+        }
+    } else {
+        mb_textures_autodetect();
     }
 
     if (shot || preview) {
@@ -1303,6 +1317,7 @@ int main(int argc, char** argv)
     mb_arena_init(&app.planArena);
     mb_view_default(&app.view);
     app.tab = TAB_3D;
+    mb_textures_autodetect();
 
     mb_term_init();
 

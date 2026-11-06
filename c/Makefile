@@ -61,7 +61,7 @@ TESTOBJ  := $(filter-out $(BUILD)/main.o $(BUILD)/gui.o,$(OBJ)) $(BUILD)/tests/t
 # ---------------------------------------------------------------------------
 ifeq ($(OS),Windows_NT)
   SPECS  := -specs="$(CURDIR)/tools/no-manifest.specs"
-  LDLIBS := -lwinhttp -lshell32 -lgdi32 -luser32
+  LDLIBS := -lwinhttp -lshell32 -lwindowscodecs -lole32 -luuid -lgdi32 -luser32
   GUI_LDLIBS := -Lvendor/raylib/lib -lraylib -lopengl32 -lgdi32 -lwinmm
   winpath = $(subst /,\,$(1))
   MKDIR   = cmd /c if not exist "$(call winpath,$(1))" mkdir "$(call winpath,$(1))"

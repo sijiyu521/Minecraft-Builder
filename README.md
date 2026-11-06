@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-34d399.svg)](./LICENSE)
 ![C11](https://img.shields.io/badge/C-C11-00599c.svg)
 ![UI](https://img.shields.io/badge/UI-Raylib%206.2%20%2B%20Raygui-4cc38a.svg)
-![Tests](https://img.shields.io/badge/tests-849%20passing-22c55e.svg)
+![Tests](https://img.shields.io/badge/tests-853%20passing-22c55e.svg)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20compatible-7c3aed.svg)
 
 </div>
@@ -57,6 +57,8 @@
 |---|---|
 | 🖥️ **桌面工作台** | Raylib 6.2 + Raygui 即时模式 UI；提示词、3D 视口、平面图、材料、报告、导出与模型设置集中在一个窗口 |
 | 🧩 **随仓库提供依赖** | Raylib 静态库与 Raygui 单头文件已放入 `c/vendor/`，无需额外安装 UI SDK |
+| 🖼️ **原版材质（可选）** | 默认使用程序生成贴图；把本机 Minecraft 的原版方块 PNG 提取到 `c/textures/block` 后自动优先加载，仓库本身不附带 Mojang 素材 |
+| 📖 **全材料说明** | 42 种方块的分类、外观和用途都有一句话说明：GUI 材料清单悬停可看，CSV / Markdown / JSON 导出也带说明 |
 | ⌨️ **可选终端 TUI** | `mb.exe --tui` 启动 ANSI truecolor 终端界面 |
 | 🤖 **大模型规划** | 每个新方案都通过一次 OpenAI 兼容接口调用产出，模型返回结构化建筑意图，支持一键测试连接 |
 | 🔑 **必须配置模型** | 需要 endpoint + 模型名 + API Key（Ollama 可留空）；没有配置就生成失败，没有不依赖模型的离线模式 |
@@ -107,6 +109,7 @@ mingw32-make clean       # 清掉 build/
 - 拖动 3D 视口旋转，滚轮缩放；网格、坐标轴和自动环绕可单独切换。
 - 顶部页签切换 3D 预览、楼层图、生成报告、导出文件和模型设置。
 - 模型设置支持服务预设、Base URL、API Key、模型名、温度、JSON 模式与连接测试；Base URL 和 API Key 可用 `Ctrl+V` 直接粘贴。
+- 材料清单每一行可悬停查看方块分类与一句话用途说明；如果本地提取了原版材质，状态栏会提示「已加载原版材质」。
 - 设置点「保存设置」立即写入；退出窗口时也会自动保存 endpoint、Key、模型、温度与 JSON 模式，下次启动继续生效。
 - 配置文件优先放在 `%APPDATA%\MinecraftBuilder\settings.ini`；如果该位置不可写（受限账户或安全软件会拒绝未签名程序写用户目录），会自动回退到程序目录下的 `settings.ini`。
 - 中文界面字体优先使用系统 DengXian，缺失时依次回退到 Microsoft YaHei / SimHei / SimSun；界面上新出现的文字（包括模型返回的名字与备注）会自动补齐字形。
@@ -177,14 +180,83 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 | `--yaw <度>` | 覆盖相机水平角（仅 `--shot` 有效） |
 | `--pitch <度>` | 覆盖相机俯仰角 |
 | `--dist <方块>` | 覆盖相机到建筑中心的距离 |
+| `--textures <目录>` | 使用本机 Minecraft 原版方块材质（资源包根目录 / `textures` / `block` 目录均可） |
 
 ### 三个值得说的取舍
 
-**方块贴图是代码生成的。** Minecraft 的官方材质有版权，本仓库**不附带任何游戏素材**。每张 16×16 贴图都是运行时按材质 id 生成的乘性噪声图（三倍频 fbm，值域 0.5–1.5），石砌有颗粒、木板有木纹、树叶有团块，方块边缘再压一圈暗描边——远看是纹理，近看是接缝。
+**默认贴图是代码生成的，原版材质可选。** Minecraft 的官方材质有版权，本仓库**不附带任何游戏素材**，默认贴图是运行时按材质 id 生成的乘性噪声图（三倍频 fbm，值域 0.5–1.5），石砌有颗粒、木板有木纹、树叶有团块，方块边缘再压一圈暗描边。如果本地有 Minecraft，可以把原版 16×16 方块 PNG 提取出来，渲染器会自动优先使用（见下一节）。
 
 **地面用距离雾收尾，而不是无限延伸。** 地面其实是个有限的网格平面，但它会随距离逐渐混入地平线色，所以看不出来是在哪里断掉的。雾的起点是从相机到**建筑中心**的距离，不是到原点——不管相机怎么摆，雾都不会爬到模型身上。
 
 **玻璃那一趟也写深度。** 半透明必须从后往前画，但如果这趟不写 z-buffer，一条视线上的每块玻璃都会再混一次同一个色调——一面玻璃幕墙最后会黑成一块板子。让最近的那块玻璃先占住像素，幕墙就只剩一层淡蓝。
+
+---
+
+## 材质：原版材质包与材料说明
+
+### 用 Minecraft 原版材质
+
+默认贴图是程序生成的。想用原版材质，只需把你自己的 Minecraft 客户端里的方块 PNG 提取到 `c/textures/block/`：
+
+```powershell
+cd c
+powershell -ExecutionPolicy Bypass -File tools\extract-vanilla-textures.ps1
+```
+
+脚本会自动找到 `%APPDATA%\.minecraft\versions\` 下最新的客户端 jar，把 `assets/minecraft/textures/block/*.png` 复制到 `c\textures\block`（该目录已 git-ignore）。也可以用 `-Source` 指定任意客户端 jar 或已解压的资源包目录。
+
+渲染器按这个顺序查找：`--textures 目录` → 环境变量 `MB_TEXTURES` → 程序目录/上级目录的 `textures` → 当前目录的 `textures` → `%APPDATA%\.minecraft\resourcepacks\*\assets\minecraft\textures\block`。找到就用原版 PNG，找不到就继续用程序生成贴图；GUI 状态栏和 TUI 设置页都会标出当前使用的是哪套。
+
+> 原版方块贴图版权归 Mojang 所有，本仓库不附带任何游戏素材；`c/textures/` 只存在于你的本机，不会 commit。
+
+### 全部材料说明
+
+42 种方块（模型只能从这份白名单里挑）。桌面界面把鼠标悬停在材料清单的某一行上会弹出说明；`.csv` / `.md` / `.json` 导出也会带上分类和说明。
+
+| 方块 id | 名称 | 分类 | 说明 |
+| --- | --- | --- | --- |
+| `stone` | 石头 | 石材 | 灰色基础石材，适合地基、粗砌墙体和体块垫层。 |
+| `cobblestone` | 圆石 | 石材 | 粗糙圆石，做地基、护坡和乡村/废墟墙面的粗粝质感。 |
+| `stone_bricks` | 石砖 | 石材 | 规整石砖，城堡墙体和柱子的主材，轮廓清晰。 |
+| `mossy_stone_bricks` | 苔石砖 | 石材 | 带苔藓的石砖，做废墟、古堡和潮湿墙面。 |
+| `deepslate_bricks` | 深板岩砖 | 石材 | 深色冷调砖，现代/工业风的暗部与边框。 |
+| `polished_andesite` | 磨制安山岩 | 石材 | 中性灰磨光石，做台阶、地面和现代外墙。 |
+| `smooth_stone` | 平滑石头 | 石材 | 干净浅灰，适合现代墙面、台面和屋顶压顶。 |
+| `sand` | 沙子 | 石材 | 暖黄细沙，沙漠风墙面、地面和海岸线。 |
+| `oak_log` | 橡木原木 | 木材 | 暖棕木纹，木屋承重柱、边框和原木墙。 |
+| `spruce_log` | 云杉原木 | 木材 | 深棕原木，森林小屋、桁架和深色结构。 |
+| `stripped_oak_log` | 去皮橡木 | 木材 | 浅棕光滑木，做室内梁柱、家具和对比线条。 |
+| `oak_planks` | 橡木木板 | 木材 | 经典浅色木板，木屋墙、地板和阳台。 |
+| `spruce_planks` | 云杉木板 | 木材 | 深棕木板，屋顶、墙板和乡村配色。 |
+| `dark_oak_planks` | 深色橡木木板 | 木材 | 近黑棕木，做对比墙、门和深色结构。 |
+| `birch_planks` | 白桦木板 | 木材 | 浅米色木板，北欧/现代室内与外墙点缀。 |
+| `bookshelf` | 书架 | 木材 | 带书的木质方块，做图书馆、书房和墙面装饰。 |
+| `bricks` | 砖块 | 石材 | 红砖，烟囱、壁炉和英伦/工业风墙面。 |
+| `quartz_block` | 石英块 | 石材 | 明亮乳白，做现代立面、台面和装饰线条。 |
+| `smooth_quartz` | 平滑石英 | 石材 | 无纹理亮白，现代极简墙面与台面。 |
+| `white_concrete` | 白色混凝土 | 石材 | 纯白无纹理，现代建筑的主墙。 |
+| `light_gray_concrete` | 淡灰色混凝土 | 石材 | 浅灰无纹理，次墙、分缝和中性底。 |
+| `gray_concrete` | 灰色混凝土 | 石材 | 中灰无纹理，现代/工业的对比墙面与屋顶。 |
+| `black_concrete` | 黑色混凝土 | 石材 | 近黑无纹理，做阴影带、边框和强烈对比。 |
+| `glass` | 玻璃 | 玻璃 | 全透明方块，落地窗、幕墙和采光顶。 |
+| `glass_pane` | 玻璃板 | 玻璃 | 薄玻璃片，窗格、栏杆和温室隔断。 |
+| `tinted_glass` | 遮光玻璃 | 玻璃 | 深色半透明，做冷调幕墙和隐私窗。 |
+| `oak_leaves` | 橡树树叶 | 自然 | 暖绿树叶，庭院绿化、树冠和遮荫。 |
+| `spruce_leaves` | 云杉树叶 | 自然 | 深绿针叶，森林感和树屋树冠。 |
+| `grass_block` | 草方块 | 自然 | 草皮方块，花园地面和建筑周边绿化。 |
+| `dirt` | 泥土 | 自然 | 土色方块，地基回填、花园和自然过渡。 |
+| `hay_block` | 干草块 | 自然 | 金黄干草，做农场、装饰和暖色点缀。 |
+| `water` | 水 | 自然 | 半透明蓝，桥下水面、护城河和景观池。 |
+| `white_wool` | 白色羊毛 | 羊毛 | 柔软白块，做织物、旗帜和柔光装饰。 |
+| `red_wool` | 红色羊毛 | 羊毛 | 饱和红，做旗帜、遮阳篷和强调色。 |
+| `blue_wool` | 蓝色羊毛 | 羊毛 | 饱和蓝，做旗帜、织物和冷色点缀。 |
+| `terracotta` | 陶瓦 | 装饰 | 暖橙陶土，沙漠/地中海风墙面和屋顶。 |
+| `iron_bars` | 铁栏杆 | 装饰 | 细铁栏，阳台护栏、窗栅和地牢感细节。 |
+| `ladder` | 梯子 | 装饰 | 可攀爬梯子，楼层之间和塔楼内的垂直交通。 |
+| `crafting_table` | 工作台 | 装饰 | 木工台，守卫室、工坊和乡村室内细节。 |
+| `glowstone` | 萤石 | 光源 | 高亮发光，屋顶灯、室内主光源。 |
+| `sea_lantern` | 海晶灯 | 光源 | 冷白发光，现代室内、水景和露台照明。 |
+| `lantern` | 灯笼 | 光源 | 暖黄小灯，门廊、栏杆和街巷照明。 |
 
 ---
 
@@ -286,19 +358,19 @@ setblock ~1 ~0 ~0 minecraft:white_concrete
 
 ### 2. `.json` —— 结构化方案
 
-完整的 `blocks[]`、`palette`、`stats`、`report`，方便你写脚本二次加工。
+完整的 `blocks[]`、`palette`、`stats`、`report`，方便你写脚本二次加工。`palette[]` 和 `stats.byMaterial[]` 都带 `name` / `category` / `desc`，不用再对着一张 id 表猜方块长什么样。
 
 ### 3. `.csv` —— 材料采购单
 
 ```
-id,name,count,percent
-minecraft:birch_planks,白桦木板,493,40.4
+方块ID,中文名,分类,数量,占总量比例,说明
+minecraft:birch_planks,白桦木板,木材,493,40.40%,浅米色木板，北欧/现代室内与外墙点缀。
 ...
 ```
 
 ### 4. `.md` —— 中文说明书
 
-把上面这些整理成一份可读的建造文档，包含结构摘要、材料表、模型给出的建筑意图与校验后的统计。
+把上面这些整理成一份可读的建造文档，包含结构摘要、带分类和说明的材料表、模型给出的建筑意图与校验后的统计。
 
 ---
 
@@ -311,13 +383,14 @@ c/
 ├─ src/
 │  ├─ util.c          # Arena 内存池、SBuf、UTF-8↔UTF-16、FNV-1a、mulberry32、trim、大小写比较
 │  ├─ json.c          # 手写 JSON 解析 / 序列化 / 转义（不引第三方库）
-│  ├─ materials.c     # 40 种方块：id、中文名、分类、近似颜色、发光标记
+│  ├─ materials.c     # 42 种方块：id、中文名、分类、近似颜色、发光标记、一句话说明
 │  ├─ voxel.c         # 稀疏体素 Sketch + Builder（box/rect/perimeter/cylinder/ellipsoid/
 │  │                  #   gableRoof/crenellation/ringMerlons/cutOpening/glaze/normalize）
 │  ├─ structures.c    # 6 套参数化模板 + 7 套材质风格
 │  ├─ planner.c       # 模型意图的归一化 / 校验与生成调度（不含本地提示词解析）
 │  ├─ llm.c           # ★ 唯一联网的模块：system prompt、白名单注入、响应校验/夹紧
 │  ├─ config.c        # 本机设置持久化（%APPDATA%\MinecraftBuilder\settings.ini）
+│  ├─ textures.c      # 可选：从本机资源包加载原版 16×16 方块 PNG（Windows WIC；无素材时回退）
 │  ├─ http_winhttp.c  # WinHTTP POST（失败时回退到 spawn curl.exe）
 │  ├─ gui.c           # Raylib + Raygui 桌面工作台
 │  ├─ render.c        # ANSI truecolor 等距 3D 渲染 + 逐层平面图（可选 TUI）
@@ -330,9 +403,10 @@ c/
 │  ├─ raylib/         # Raylib 6.2 MinGW x64 静态库与头文件
 │  └─ raygui/         # Raygui 5.1-dev 单头文件与许可证
 ├─ tests/
-│  └─ test_core.c     # 849 项离线核心回归检查（手工构建意图，不联网）
+│  └─ test_core.c     # 853 项离线核心回归检查（手工构建意图，不联网）
 ├─ tools/
-│  └─ no-manifest.specs  # 带空格路径下的链接 workaround
+│  ├─ no-manifest.specs           # 带空格路径下的链接 workaround
+│  └─ extract-vanilla-textures.ps1  # 从本机 Minecraft 提取原版方块贴图（本地使用，不提交）
 ├─ Makefile
 └─ LICENSE / README.md
 ```
@@ -394,7 +468,7 @@ mingw32-make test
 > persisted model settings
 > 3d preview and bmp output
 
-[PASS]  849 checks, 0 failures
+[PASS]  853 checks, 0 failures
 ```
 
 包括但不限于：
@@ -408,6 +482,8 @@ mingw32-make test
 - **模型意图归一化/校验断言**：代码块包裹的 JSON 能解析、`width: 999` 被夹紧、未知模板/风格回退、非法方块名被丢弃、空计划/缺字段不会崩、palette 逐槽覆盖生效
 - **确定性断言**（同一意图 + 种子 42 两次完全一致；种子 43 结果不同）
 - **设置持久化断言**：模型设置写出后能原样读回，手改过的 key=value 文件（空行、注释、CRLF、未知键、越界温度）也能正确解析
+- **材料说明断言**：42 种方块全部有分类名和非空说明；未知方块回退时不会返回垃圾指针
+- **材质回退断言**：没有提取原版材质包时，纹理查找必须干净地失败并继续走程序生成贴图
 - **渲染器与辅助函数断言**：软件光栅器的裁剪 / z-buffer 路径、UTF-8↔UTF-16 转换、显示宽度、URL 拼接与 slugify
 
 > 真正的 HTTP 调用不在测试范围内——它需要密钥，也不该在 CI 里花钱。被测的是纯函数与离线路径：`extractJsonObject` / `normalizePlan` / `mb_generate`、导出器、渲染器、配置读写。
@@ -458,7 +534,8 @@ A **C11 desktop application**: prompt → structured build intent from an OpenAI
 - **No cost just to open.** The desktop app starts with an empty 3D viewport; no generation request is made until you click 生成建筑. 「换个方案」reuses the cached model plan with a new seed, so it costs no extra tokens. `--preview` and `--shot` also call the model and therefore need a configured endpoint and key.
 - **Persistent settings.** Endpoint, API key, model, temperature and JSON mode are saved on exit /「保存设置」and reloaded from `%APPDATA%\MinecraftBuilder\settings.ini` (falling back to `settings.ini` next to the executable when the profile is not writable) and shared by the desktop and terminal front ends.
 - **Reproducible**: seeded RNG, same build intent + same seed = identical output; re-variation reuses the cached plan.
-- **849-check offline regression suite**: no network, no key; hand-built build intents drive the same generation path the model drives, plus model-JSON plan normalization/validation, exporters, renderer, helpers and settings round-trip.
+- **Optional vanilla textures, fully local.** The renderer ships procedural textures. If you extract your own Minecraft block PNGs into `c/textures/block` (helper script in `c/tools/`, folder is git-ignored), the previewer prefers them; Mojang assets are never committed. A tooltip on every material row shows its category and one-line description, and the CSV / Markdown / JSON exports carry those descriptions too.
+- **853-check offline regression suite**: no network, no key; hand-built build intents drive the same generation path the model drives, plus model-JSON plan normalization/validation, exporters, renderer, helpers, settings round-trip and material/texture fallbacks.
 - **Chinese prompts** are understood directly by the model; explicit dimensions (`15x11`, `宽20 深12`), floor counts and block-material names in its intent are still validated against the catalog.
 
 ```powershell
