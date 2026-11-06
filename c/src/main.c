@@ -384,7 +384,7 @@ static void draw_body_3d(SBuf* b, App* app, Arena* frame, int cols, int bodyRows
     const MBBuildResult* r = app->result;
     if (!r) {
         card_blank(b, cols);
-        card_kv(b, "预览", "没有可预览的建筑 — 修正错误后按 Enter 重试", cols);
+        card_kv(b, "预览", "还没有建筑 — 配置模型后按 Enter 生成", cols);
         for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
@@ -468,7 +468,7 @@ static void draw_body_report(SBuf* b, App* app, Arena* frame, int cols, int body
     const MBBuildResult* r = app->result;
     if (!r) {
         card_blank(b, cols);
-        card_kv(b, "报告", "没有报告 — 修正错误后按 Enter 重试", cols);
+        card_kv(b, "报告", "还没有报告 — 生成一次后显示", cols);
         for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
