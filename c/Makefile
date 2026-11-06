@@ -1,11 +1,13 @@
 # Makefile — Minecraft Builder, C edition
 #
-# Zero third-party dependencies. Everything that comes from outside this source
-# tree is shipped with the operating system: winhttp for the model calls (with a
-# fallback to spawning curl.exe), and gdi32/user32 for the 3D preview window.
+# Raylib and Raygui are vendored under vendor/ for the desktop UI. Everything
+# else that comes from outside this source tree is shipped with the OS: winhttp
+# for model calls (with a fallback to spawning curl.exe), and Win32 libraries
+# for the legacy standalone preview window.
 #
 #   mingw32-make            build build/mb.exe
-#   mingw32-make run        build and launch the TUI
+#   mingw32-make run        build and launch the desktop GUI
+#   build/mb.exe --tui      launch the optional terminal interface
 #   mingw32-make test       build and run the golden-value test suite
 #   mingw32-make clean      remove build/
 #
@@ -24,7 +26,7 @@ CFLAGS   ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes
 # BOOL as well, so any translation unit that ends up with both headers fails to
 # compile with "redefinition of 'BOOL'". Defining it globally is the one place
 # that fixes every file at once. It also trims a few seconds off each compile.
-CPPFLAGS := -Iinclude -DWIN32_LEAN_AND_MEAN
+CPPFLAGS := -Iinclude -Ivendor/raylib/include -Ivendor/raygui -DWIN32_LEAN_AND_MEAN
 
 BUILD    := build
 BIN      := $(BUILD)/mb.exe
@@ -38,7 +40,7 @@ SRC      := $(wildcard src/*.c)
 OBJ      := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 
 # main.o is excluded from the test binary so the tests own the entry point.
-TESTOBJ  := $(filter-out $(BUILD)/main.o,$(OBJ)) $(BUILD)/tests/test_core.o
+TESTOBJ  := $(filter-out $(BUILD)/main.o $(BUILD)/gui.o,$(OBJ)) $(BUILD)/tests/test_core.o
 
 # ---------------------------------------------------------------------------
 # Platform quirks
@@ -60,12 +62,14 @@ TESTOBJ  := $(filter-out $(BUILD)/main.o,$(OBJ)) $(BUILD)/tests/test_core.o
 ifeq ($(OS),Windows_NT)
   SPECS  := -specs="$(CURDIR)/tools/no-manifest.specs"
   LDLIBS := -lwinhttp -lgdi32 -luser32
+  GUI_LDLIBS := -Lvendor/raylib/lib -lraylib -lopengl32 -lgdi32 -lwinmm
   winpath = $(subst /,\,$(1))
   MKDIR   = cmd /c if not exist "$(call winpath,$(1))" mkdir "$(call winpath,$(1))"
   RMDIR   = cmd /c if exist "$(call winpath,$(1))" rmdir /S /Q "$(call winpath,$(1))"
 else
   SPECS  :=
   LDLIBS :=
+  GUI_LDLIBS :=
   MKDIR   = mkdir -p "$(1)"
   RMDIR   = rm -rf "$(1)"
 endif
@@ -74,14 +78,13 @@ endif
 
 all: $(BIN)
 
-$(BUILD)/%.o: src/%.c include/mb.h | $(BUILD)
+$(BUILD)/%.o: src/%.c include/mb.h vendor/raylib/include/raylib.h vendor/raygui/raygui.h | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(BUILD)/tests/%.o: tests/%.c include/mb.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-$(BIN): $(OBJ)
-	$(CC) $(SPECS) $(OBJ) -o $@ $(LDLIBS)
+$(BIN): $(OBJ); $(CC) $(SPECS) $(OBJ) -o $@ $(GUI_LDLIBS) $(LDLIBS)
 
 $(TESTBIN): $(TESTOBJ)
 	$(CC) $(SPECS) $(TESTOBJ) -o $@ $(LDLIBS)

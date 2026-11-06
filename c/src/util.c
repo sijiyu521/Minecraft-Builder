@@ -278,6 +278,73 @@ size_t mb_u16_len_buf(const U16* s)
     return n;
 }
 
+/* Width of one code point in terminal cells. East Asian wide glyphs take two
+ * columns, everything else takes one. */
+static int cp_width(uint32_t cp)
+{
+    if (cp >= 0x1100 && cp <= 0x115F) return 2;
+    if (cp >= 0x2E80 && cp <= 0xA4CF) return 2;
+    if (cp >= 0xAC00 && cp <= 0xD7A3) return 2;
+    if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
+    if (cp >= 0xFE30 && cp <= 0xFE6F) return 2;
+    if (cp >= 0xFF00 && cp <= 0xFF60) return 2;
+    if (cp >= 0xFFE0 && cp <= 0xFFE6) return 2;
+    if (cp >= 0x1F300 && cp <= 0x1FAFF) return 2;
+    return 1;
+}
+
+/* Skip one ANSI escape sequence starting at s (known to start with ESC '[').
+ * Returns the number of bytes consumed, and *span is the column width (always
+ * zero, escapes are invisible). */
+static size_t skip_escape(const char* s, size_t n, int* span)
+{
+    if (span) *span = 0;
+    size_t j = 2;
+    while (j < n && !(s[j] >= '@' && s[j] <= '~')) j++;
+    if (j < n) j++;
+    return j;
+}
+
+int mb_display_width(const char* s)
+{
+    int w = 0;
+    size_t n = s ? strlen(s) : 0;
+    size_t i = 0;
+    while (i < n) {
+        if ((unsigned char)s[i] == 0x1b && i + 1 < n && s[i + 1] == '[') {
+            i += skip_escape(s + i, n - i, NULL);
+            continue;
+        }
+        uint32_t cp = 0;
+        size_t used = utf8_next(s + i, &cp);
+        w += cp_width(cp);
+        i += used;
+    }
+    return w;
+}
+
+int mb_sb_puts_clip(SBuf* b, const char* s, size_t n, int maxCols)
+{
+    int w = 0;
+    size_t i = 0;
+    while (i < n) {
+        if ((unsigned char)s[i] == 0x1b && i + 1 < n && s[i + 1] == '[') {
+            size_t used = skip_escape(s + i, n - i, NULL);
+            mb_sb_write(b, s + i, used);
+            i += used;
+            continue;
+        }
+        uint32_t cp = 0;
+        size_t used = utf8_next(s + i, &cp);
+        int cw = cp_width(cp);
+        if (w + cw > maxCols) break;      /* never split a wide glyph */
+        mb_sb_write(b, s + i, used);
+        w += cw;
+        i += used;
+    }
+    return w;
+}
+
 static size_t utf8_put(char* out, uint32_t cp)
 {
     if (cp < 0x80u) {

@@ -31,6 +31,27 @@
 
 typedef struct { unsigned char r, g, b; } RGB;
 
+/* Shared design tokens. The terminal views and the window chrome all read from
+   this palette so the whole product looks like one thing. */
+#define UI_CANVAS_R 22
+#define UI_CANVAS_G 24
+#define UI_CANVAS_B 29
+#define UI_GRID_R   44
+#define UI_GRID_G   49
+#define UI_GRID_B   60
+#define UI_DIM_R    139
+#define UI_DIM_G    147
+#define UI_DIM_B    167
+#define UI_SOFT_R   195
+#define UI_SOFT_G   201
+#define UI_SOFT_B   214
+#define UI_ACCENT_R 76
+#define UI_ACCENT_G 195
+#define UI_ACCENT_B 138
+#define UI_VOID_R   24
+#define UI_VOID_G   26
+#define UI_VOID_B   33
+
 static RGB rgb_of(uint32_t color)
 {
     RGB c;
@@ -197,7 +218,7 @@ char* mb_render_iso(Arena* a, const MBBuildResult* r, const MBView* v, int cols,
     if (W < 8 || H < 8) return mb_arena_strdup(a, "");
 
     RGB* px = (RGB*)mb_arena_alloc(a, (size_t)W * (size_t)H * sizeof(RGB));
-    RGB bg = { 20, 22, 29 };
+    RGB bg = { UI_CANVAS_R, UI_CANVAS_G, UI_CANVAS_B };
     for (size_t i = 0; i < (size_t)W * (size_t)H; i++) px[i] = bg;
 
     Iso m;
@@ -245,7 +266,7 @@ char* mb_render_iso(Arena* a, const MBBuildResult* r, const MBView* v, int cols,
 
     /* --- ground grid and axes (drawn first, so the building covers them) -- */
     if (v->showGrid) {
-        RGB grid = { 42, 46, 58 };
+        RGB grid = { UI_GRID_R, UI_GRID_G, UI_GRID_B };
         for (int gx = 0; gx <= r->size.x; gx++) {
             draw_line_3d(px, W, H, &m, gx, 0, 0, gx, 0, r->size.z, grid,
                          r->size.z * 3 + 4);
@@ -256,7 +277,7 @@ char* mb_render_iso(Arena* a, const MBBuildResult* r, const MBView* v, int cols,
         }
     }
     if (v->showAxes) {
-        RGB ax = { 214, 78, 78 }, ay = { 120, 200, 110 }, az = { 92, 138, 235 };
+        RGB ax = { 226, 96, 96 }, ay = { 116, 206, 132 }, az = { 104, 150, 244 };
         double len = fmax(r->size.x, r->size.z) * 0.35 + 2.0;
         draw_line_3d(px, W, H, &m, 0, 0, 0, len, 0, 0, ax, 24);
         draw_line_3d(px, W, H, &m, 0, 0, 0, 0, len, 0, ay, 24);
@@ -356,12 +377,12 @@ char* mb_render_slice(Arena* a, const MBBuildResult* r, int layer, int maxCols, 
     SBuf out;
     mb_sb_init(&out, a);
 
-    RGB empty = { 24, 26, 33 };
+    RGB empty = { UI_VOID_R, UI_VOID_G, UI_VOID_B };
     RGB lastBg = { 0, 0, 0 };
     bool haveBg = false;
 
     for (int z = 0; z < drawH; z++) {
-        mb_sb_printf(&out, "\x1b[0m\x1b[38;2;110;116;132m%3d\x1b[0m ", z);
+        mb_sb_printf(&out, "\x1b[0m\x1b[38;2;%d;%d;%dm%3d\x1b[0m ", UI_DIM_R, UI_DIM_G, UI_DIM_B, z);
         for (int x = 0; x < drawW; x++) {
             const char* mat = grid[(size_t)z * (size_t)drawW + (size_t)x];
             RGB c = mat ? rgb_of(mb_material_color(mat)) : empty;
@@ -373,7 +394,7 @@ char* mb_render_slice(Arena* a, const MBBuildResult* r, int layer, int maxCols, 
     }
 
     /* x axis ruler */
-    mb_sb_puts(&out, "\x1b[0m\x1b[38;2;110;116;132m    ");
+    mb_sb_printf(&out, "\x1b[0m\x1b[38;2;%d;%d;%dm    ", UI_DIM_R, UI_DIM_G, UI_DIM_B);
     for (int x = 0; x < drawW; x++) {
         if (x % 10 == 0) {
             char buf[24];
@@ -390,19 +411,79 @@ char* mb_render_slice(Arena* a, const MBBuildResult* r, int layer, int maxCols, 
 /* legend                                                                     */
 /* ========================================================================== */
 
+/*
+ * Every row is laid out to exactly 35 display columns: swatch(2) + name(8) +
+ * bar(10) + count(5) + share(6) plus the single spaces between them.
+ * That budget is what stops the panel from wrapping: a wide-graphic name is
+ * clipped with mb_sb_puts_clip(), and the name field is then padded back out
+ * with spaces using the *measured* width, never a printf field count (printf
+ * counts bytes, and a single CJK glyph is three bytes for two cells).
+ * main.c reserves at least 36 columns for the panel, so a row always fits.
+ */
+#define LEGEND_SWATCH   2   /* the coloured block marking the material   */
+#define LEGEND_NAME     8   /* material name, clipped                    */
+#define LEGEND_BAR     10   /* proportional bar                          */
+
+static void legend_pad(SBuf* b, int cols)
+{
+    for (int i = 0; i < cols; i++) mb_sb_putc(b, ' ');
+}
+
 char* mb_render_legend(Arena* a, const MBBuildResult* r)
 {
     SBuf out;
     mb_sb_init(&out, a);
+
+    mb_sb_printf(&out, "\x1b[1m\x1b[38;2;%d;%d;%dm材料清单\x1b[0m"
+                       "  \x1b[38;2;%d;%d;%dm%d 种 · %d 块\x1b[0m\n",
+                 UI_SOFT_R, UI_SOFT_G, UI_SOFT_B,
+                 UI_DIM_R, UI_DIM_G, UI_DIM_B, r->byMaterialCount, r->total);
+    if (r->byMaterialCount == 0) {
+        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm（无方块）\x1b[0m\n",
+                     UI_DIM_R, UI_DIM_G, UI_DIM_B);
+        return mb_sb_done(&out);
+    }
+
+    /* One proportional bar shared by every row keeps the widest material
+       visually comparable with the narrowest. */
+    int widest = 1;
+    for (int i = 0; i < r->byMaterialCount; i++) {
+        if (r->byMaterial[i].count > widest) widest = r->byMaterial[i].count;
+    }
 
     for (int i = 0; i < r->byMaterialCount; i++) {
         const MBMaterialUsage* u = &r->byMaterial[i];
         const MBMaterial* m = mb_material(u->id);
         RGB c = rgb_of(m->color);
         double pct = r->total > 0 ? ((double)u->count / (double)r->total) * 100.0 : 0.0;
-        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm\xe2\x96\xa0\x1b[0m %-28s %6d  %5.1f%%\n",
-                     c.r, c.g, c.b, m->name, u->count, pct);
+
+        int filled = (int)((double)u->count / (double)widest * LEGEND_BAR + 0.5);
+        if (filled < 1 && u->count > 0) filled = 1;
+        if (filled > LEGEND_BAR) filled = LEGEND_BAR;
+
+        /* swatch: a solid block of the material colour */
+        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm", c.r, c.g, c.b);
+        for (int k = 0; k < LEGEND_SWATCH; k++) mb_sb_puts(&out, "\xe2\x96\x88");
+        mb_sb_putc(&out, ' ');
+
+        /* name, clipped and padded by *measured* columns */
+        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm", UI_SOFT_R, UI_SOFT_G, UI_SOFT_B);
+        int nw = mb_sb_puts_clip(&out, m->name, strlen(m->name), LEGEND_NAME);
+        legend_pad(&out, LEGEND_NAME - nw);
+        mb_sb_putc(&out, ' ');
+
+        /* bar */
+        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm", c.r, c.g, c.b);
+        for (int k = 0; k < filled; k++) mb_sb_puts(&out, "\xe2\x96\x88");
+        mb_sb_printf(&out, "\x1b[38;2;%d;%d;%dm", UI_GRID_R, UI_GRID_G, UI_GRID_B);
+        for (int k = filled; k < LEGEND_BAR; k++) mb_sb_puts(&out, "\xe2\x96\x91");
+        mb_sb_putc(&out, ' ');
+
+        /* count + share */
+        mb_sb_printf(&out, "\x1b[0m\x1b[38;2;%d;%d;%dm%5d\x1b[0m "
+                           "\x1b[38;2;%d;%d;%dm%5.1f%%\x1b[0m\n",
+                     UI_SOFT_R, UI_SOFT_G, UI_SOFT_B, u->count,
+                     UI_DIM_R, UI_DIM_G, UI_DIM_B, pct);
     }
-    if (r->byMaterialCount == 0) mb_sb_puts(&out, "（无方块）\n");
     return mb_sb_done(&out);
 }

@@ -4,14 +4,14 @@
 
 **用一句话描述，生成真正可建造的 Minecraft 建筑**
 
-大模型规划建筑意图 → 确定性体素建模 → 终端 3D 预览 / 逐层平面图 / 一键导出 `.mcfunction`
+大模型规划建筑意图 → 确定性体素建模 → 桌面 3D 工作台 / 逐层平面图 / 一键导出 `.mcfunction`
 
-一个**零依赖的 C11 终端应用**。没有 Electron、没有 Node、没有 three.js、没有 JSON 库、没有 HTTP 库——只要一个 C 编译器。
+一个 **C11 桌面应用**。默认启动 Raylib + Raygui 图形界面；核心几何、JSON 与 HTTP 实现仍是 C，第三方 UI 依赖随仓库提供。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-34d399.svg)](./LICENSE)
 ![C11](https://img.shields.io/badge/C-C11-00599c.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-none-16a34a.svg)
-![Tests](https://img.shields.io/badge/tests-258%20passing-22c55e.svg)
+![UI](https://img.shields.io/badge/UI-Raylib%206.2%20%2B%20Raygui-4cc38a.svg)
+![Tests](https://img.shields.io/badge/tests-277%20passing-22c55e.svg)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20compatible-7c3aed.svg)
 
 </div>
@@ -20,36 +20,15 @@
 
 ## 这是什么
 
-一个跑在终端里的 Minecraft 建筑生成器。
+一个带桌面工作台的 Minecraft 建筑生成器。
 
 你输入一句中文描述，比如：
 
 > 帮我建一座现代风格的两层别墅，白墙大落地窗，尺寸 15x11
 
-它会当场算出整套方块方案，用 **ANSI truecolor 在终端里画出等距 3D 预览**和逐层平面图，并导出可以直接在游戏里跑起来的 `/setblock` 指令。
+默认打开 **Raylib + Raygui 桌面界面**：左侧输入建筑描述与控制生成，中间查看可旋转缩放的 3D 建筑或逐层平面图，侧栏浏览材料统计；报告、导出和模型设置也都在窗口内完成。另可用 `--tui` 启动终端界面，或用 `--shot` 无窗口渲染 BMP。
 
 **它不是一个"画得像"的演示，而是一个能真的盖出来的工具。** 导出的每一个方块坐标都在建筑包围盒内、没有重复、没有空洞，`.mcfunction` 的行数与方块数严格相等——这些都由自动化测试守着（见[开发与测试](#开发与测试)）。
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  ⛏ Minecraft Builder            本地规则引擎 · 无需联网                     │
-│  现代简约 · 现代别墅   16 × 13 × 17   1342 方块   9 种材料                 │
-├───────────────────────────────────────────────────────────────────────────┤
-│  [1] 3D 预览   [2] 平面图   [3] 报告   [4] 导出   [5] 设置                 │
-├───────────────────────────────────────────────────────────────────────────┤
-│                        ▄▟▙▄                                                │
-│                     ▗▟███████▙▖            ░░ 玻璃                          │
-│                  ▄▟█████████████▙▄          ▒▒ 石砖                          │
-│               ▗▟███████████████████▙▖       ▓▓ 深色橡木                      │
-│               ▜█████████████████████▛       ██ 白色混凝土                    │
-│               ▜█████████████████████▛                                      │
-│                   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                         │
-├───────────────────────────────────────────────────────────────────────────┤
-│  就绪 · 用时 3 ms                                                          │
-├───────────────────────────────────────────────────────────────────────────┤
-│  i 编辑提示词 · Enter 生成 · a AI/本地 · t 测试连接 · g 换变体 · Tab 切换  │
-└───────────────────────────────────────────────────────────────────────────┘
-```
 
 > ### 🧠 关于"AI"的说明
 >
@@ -74,8 +53,9 @@
 
 | | |
 |---|---|
-| 📦 **零第三方依赖** | 单文件 `mb.exe`，只要一个 C 编译器。JSON 解析器、HTTP 客户端、3D 渲染器全部手写 |
-| 🖥️ **终端 TUI** | ANSI truecolor 逐像素等距投影，玻璃半透明、光源方块自发光，键盘驱动 |
+| 🖥️ **桌面工作台** | Raylib 6.2 + Raygui 即时模式 UI；提示词、3D 视口、平面图、材料、报告、导出与模型设置集中在一个窗口 |
+| 🧩 **随仓库提供依赖** | Raylib 静态库与 Raygui 单头文件已放入 `c/vendor/`，无需额外安装 UI SDK |
+| ⌨️ **可选终端 TUI** | `mb.exe --tui` 启动 ANSI truecolor 终端界面 |
 | 🤖 **大模型规划** | 接任意 OpenAI 兼容接口，模型输出结构化建筑意图，支持一键测试连接 |
 | 🗣️ **中文提示词理解** | 建筑类型、材质风格、体量、层数、显式尺寸、具体方块名，都能从一句话里抠出来 |
 | 🏗️ **6 套参数化模板** | 现代别墅 / 原木小屋 / 城堡塔楼 / 树屋 / 石桥 / 城墙，每套都是真正"能住/能走"的结构 |
@@ -91,14 +71,15 @@
 
 ## 构建
 
-需要 **MinGW-w64 GCC**（推荐 [winlibs](https://winlibs.com/) 构建，自带 `mingw32-make`）。没有其它依赖。
+需要 **Windows x64 + MinGW-w64 GCC**（推荐 [winlibs](https://winlibs.com/) 构建，自带 `mingw32-make`）。Raylib 6.2 静态库和 Raygui 头文件已随仓库提供。
 
 ```powershell
 cd c
-mingw32-make          # 编译出 build/mb.exe
-mingw32-make run      # 编译并启动
-mingw32-make test     # 编译并跑黄金数值测试
-mingw32-make clean    # 清掉 build/
+mingw32-make             # 编译 build/mb.exe
+mingw32-make run         # 编译并启动桌面图形界面
+build\mb.exe --tui       # 可选：启动终端界面
+mingw32-make test        # 编译并跑核心测试
+mingw32-make clean       # 清掉 build/
 ```
 
 > **注意**：winlibs 工具链里**没有** `make`，只有 `mingw32-make`。直接敲 `make` 会找不到命令。
@@ -113,9 +94,18 @@ mingw32-make clean    # 清掉 build/
 
 ---
 
-## 操作
+## 桌面界面
 
-应用是**模态**的：默认所有字母都是命令，按 `i` 才把键盘交给提示词输入框——这是在没有一堆组合键的前提下把 ASCII 字母打进中文提示词的最干净做法。
+- 左侧输入建筑描述，点击“生成建筑”；可切换本地规划或大模型规划。
+- 拖动 3D 视口旋转，滚轮缩放；网格、坐标轴和自动环绕可单独切换。
+- 顶部页签切换 3D 预览、楼层图、生成报告、导出文件和模型设置。
+- 模型设置支持服务预设、Base URL、API Key、模型名、温度、JSON 模式与连接测试；Base URL 和 API Key 可用 `Ctrl+V` 直接粘贴。
+- 设置点「保存设置」立即写入，退出窗口时也会自动保存到本机配置文件，下次启动继续生效。
+- 中文界面字体优先使用系统 DengXian，缺失时依次回退到 Microsoft YaHei / SimHei / SimSun；界面上新出现的文字（包括模型返回的名字与备注）会自动补齐字形。
+
+## 可选终端 TUI 操作
+
+终端模式通过 `build/mb.exe --tui` 显式启动。它是**模态**的：默认所有字母都是命令，按 `i` 才把键盘交给提示词输入框。
 
 | 键 | 作用 |
 |---|---|
@@ -132,7 +122,7 @@ mingw32-make clean    # 清掉 build/
 
 ### 标签页
 
-- **3D 预览**：ANSI truecolor 逐像素等距投影渲染，玻璃半透明、光源方块自发光、带后沿明暗。用真彩色转义序列直接在终端里画出来，不依赖任何图形库。
+- **3D 预览**：ANSI truecolor 逐像素等距投影渲染，玻璃半透明、光源方块自发光、带后沿明暗。
 - **平面图**：逐层俯视图，`[` `]` 翻层，下层以暗色"幽灵"叠加。
 - **报告**：把"这次是谁决定的、决定了什么"摊开——命中的关键词、识别到的材质、生效的修饰语，以及模型名 / endpoint / 规划耗时。
 - **导出**：`.mcfunction` / `.json` / `.csv` / `.md` 四种，Enter 写入当前目录。
@@ -140,13 +130,13 @@ mingw32-make clean    # 清掉 build/
 
 ---
 
-## 3D 窗口预览器
+## 独立 3D 预览窗口
 
-终端里那版等距渲染适合快速看形，但要真正围着建筑转一圈、看清材质接缝，还是得开一个真窗口。按 `p`（或用 `mb --preview`）会弹出一个 1100×700 的 Win32 窗口：
+默认桌面工作台已内置 Raylib 3D 视口。也可以用 `mb --preview` 单独打开 Win32 预览窗口，围绕建筑查看材质和接缝：
 
 ![3D 预览器](docs/preview.png)
 
-这是一个**零依赖的手写软件光栅化器**——没有 OpenGL、没有 DirectX、没有任何第三方库，只用 Windows 自带的 `gdi32` 和 `user32`。整个渲染管线（近平面裁剪、z-buffer、透视正确插值、背面剔除、体素相邻面剔除）都在 [`c/src/gfx3d.c`](c/src/gfx3d.c) 里，而且**不含任何平台代码**，所以它同时被命令行截图和测试套件直接调用。
+这个独立预览器使用手写软件光栅器；近平面裁剪、z-buffer、透视插值、背面剔除和体素相邻面剔除都在 [`c/src/gfx3d.c`](c/src/gfx3d.c) 中实现，不依赖图形 API，因此命令行截图与核心测试也能直接调用。桌面主界面的窗口和控件由 Raylib + Raygui 提供。
 
 ### 操作
 
@@ -193,7 +183,7 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 
 ## 接入大模型
 
-在 `设置` 页填三项就能用：
+在「模型设置」页填三项就能用（TUI 里是 `5` 设置页）：
 
 | 字段 | 说明 |
 |---|---|
@@ -202,7 +192,9 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 | 模型名 | 比如 `deepseek-chat` |
 | API Key | 随请求直接发给模型服务，仅保存在本机配置文件里 |
 
-填完按 `t` 可以先确认通不通（会调 `/models` 列出可用模型并核对你要用的那个在不在），再切回预览页按 `a` 打开 AI 模式。
+填完点「测试连接」可以先确认通不通（会调 `/models` 列出可用模型并核对你要用的那个在不在），再切回预览页打开「AI 规划」。TUI 里的对应按键是 `t` 测试、`a` 切换。
+
+这些设置保存在 `%APPDATA%\MinecraftBuilder\settings.ini`（Linux/macOS 为 `~/.config/minecraft-builder/settings.ini`），GUI 和 TUI 共用同一份文件：窗口关闭或终端退出时自动写入，下次启动自动读回。
 
 Ollama 预设的 API Key 可以留空；本地跑之前需要放开跨域：
 
@@ -246,7 +238,7 @@ Windows 上用系统自带的 **WinHTTP**；如果初始化失败，会退化成
 
 ### 不用大模型的时候
 
-按 `a` 切回本地确定性规则引擎：同样的提示词 + 同一种子 = 完全相同的结果，零网络请求、零成本。**两条路径共用同一套构建器和导出器**，所以导出结果、材料统计、测试断言全部通用。
+在桌面界面左侧关闭「AI 规划」（或 TUI 里按 `a`）就切回本地确定性规则引擎：同样的提示词 + 同一种子 = 完全相同的结果，零网络请求、零成本。**两条路径共用同一套构建器和导出器**，所以导出结果、材料统计、测试断言全部通用。
 
 ---
 
@@ -360,15 +352,20 @@ c/
 │  ├─ structures.c    # 6 套参数化模板 + 7 套材质风格 + 关键词表
 │  ├─ planner.c       # 两条路径：本地 analyzePrompt 与模型 plan 映射，共用构建器
 │  ├─ llm.c           # ★ 唯一联网的模块：system prompt、白名单注入、响应校验/夹紧
+│  ├─ config.c        # 本机设置持久化（%APPDATA%\MinecraftBuilder\settings.ini）
 │  ├─ http_winhttp.c  # WinHTTP POST（失败时回退到 spawn curl.exe）
-│  ├─ render.c        # ANSI truecolor 等距 3D 渲染 + 逐层平面图
+│  ├─ gui.c           # Raylib + Raygui 桌面工作台
+│  ├─ render.c        # ANSI truecolor 等距 3D 渲染 + 逐层平面图（可选 TUI）
 │  ├─ gfx3d.c         # 零依赖软件光栅化器：z-buffer、裁剪、程序化贴图、距离雾、BMP
 │  ├─ preview.c       # Win32 窗口外壳（拖动/滚轮/键盘），只负责把像素贴上去
 │  ├─ term.c          # 终端能力探测、光标/清屏、显示宽度（CJK = 2 列，ANSI 不计宽）
 │  ├─ export.c        # mcfunction / json / csv / md
-│  └─ main.c          # 模态终端界面
+│  └─ main.c          # 桌面 GUI 默认入口、TUI/CLI 参数分发
+├─ vendor/
+│  ├─ raylib/         # Raylib 6.2 MinGW x64 静态库与头文件
+│  └─ raygui/         # Raygui 5.1-dev 单头文件与许可证
 ├─ tests/
-│  └─ test_core.c     # 258 项黄金数值检查
+│  └─ test_core.c     # 277 项核心回归检查
 ├─ tools/
 │  └─ no-manifest.specs  # 带空格路径下的链接 workaround
 ├─ Makefile
@@ -450,8 +447,9 @@ mingw32-make test
 > model plan to building
 > exporters
 > helpers, urls and presets
+> persisted model settings
 
-[PASS]  258 checks, 0 failures
+[PASS]  277 checks, 0 failures
 ```
 
 包括但不限于：
@@ -463,6 +461,7 @@ mingw32-make test
 - `.mcfunction` 的 `setblock` 行数 = 方块数，且不含 `NaN`
 - 提示词解析断言（`宽20` vs `宽30` → 宽度差恰好 10；显式尺寸不被种子抖动覆盖）
 - 确定性断言（种子 42 两次结果完全一致；种子 43 结果不同）
+- **设置持久化断言**：模型设置写出后能原样读回，手改过的 key=value 文件（空行、注释、CRLF、未知键、越界温度）也能正确解析
 - **大模型响应映射断言**：代码块包裹的 JSON 能解析、越界尺寸被夹紧、未知模板回退、非法方块名被丢弃、UI 锁定优先于模型选择、空计划也能出结果（全部离线，不打网络）
 
 > 真正的 HTTP 调用不在测试范围内——它需要密钥，也不该在 CI 里花钱。被测的是那份**映射逻辑**（`extractJsonObject` / `normalizePlan` / `generateWithPlan`），它是纯函数。
@@ -473,6 +472,7 @@ mingw32-make test
 
 - [x] ~~**零依赖 C 移植**：手写 JSON / WinHTTP / ANSI 渲染，黄金数值与原实现逐条对齐~~
 - [x] ~~**LLM planner 适配器**：让模型输出结构化的建筑意图，其余管线完全复用~~
+- [x] ~~**桌面工作台**：Raylib + Raygui 把提示词、3D 视口、平面图、材料、报告、导出与模型设置收进一个窗口；设置持久化到本机~~
 - [ ] **流式输出**：规划过程中显示模型的实时推理，而不是干等
 - [ ] **局部重生成**：选中一块区域，只让模型重做这部分
 - [ ] **更多模板**：中世纪村庄、悬空岛、下沉式庭院、红石小屋
@@ -504,18 +504,22 @@ Issue 和 PR 都欢迎。如果加新建筑模板，请一并：
 
 **Minecraft Builder** — describe a build in natural language, get a constructible Minecraft structure.
 
-A **zero-dependency C11 terminal application**: prompt → voxel model → ANSI truecolor 3D preview, per-layer blueprint, material list, and one-click `.mcfunction` export you can actually run in-game.
+A **C11 desktop application**: prompt → voxel model → Raylib/Raygui workbench with a 3D viewport, per-layer blueprint, material list, and one-click `.mcfunction` export. The optional terminal UI remains available with `--tui`.
 
-- **Stack**: C11 + the standard library. On Windows the only external library is `winhttp`, which ships with the OS (with a `curl.exe` fallback). JSON parsing, HTTP, and the 3D isometric renderer are all hand-written. No Node, no three.js, no third-party packages.
+- **Stack**: C11, vendored Raylib 6.2 and Raygui 5.1-dev for the desktop UI, plus Windows `winhttp` (with a `curl.exe` fallback). JSON parsing and HTTP handling remain implemented in C.
 - **Real LLM integration.** Any OpenAI-compatible endpoint (DeepSeek / OpenAI / Kimi / GLM / Qwen / local Ollama) — the model returns a *structured build intent* (template, style, dimensions, palette, name), and the deterministic parametric builders compute every block coordinate. A hallucinating model can only pick the wrong template; it can never emit an unbuildable structure. Every id the model returns is re-validated against the real catalog: unknown block names are dropped, out-of-range dimensions clamped, unknown templates fall back.
 - **Offline fallback.** Turn AI mode off and it runs as a deterministic local rule engine — no network, no key, no cost.
+- **Persistent settings.** Endpoint, API key, model and sampling knobs are stored in `%APPDATA%\MinecraftBuilder\settings.ini` and shared by the desktop and terminal front ends.
 - **Reproducible**: seeded RNG, same prompt + same seed = identical output.
-- **258-check golden-value test suite** that pins the exact block counts per template/style.
+- **277-check regression suite** that pins the exact block counts per template/style, terminal text-width behavior, and the settings round-trip.
 - **Supports Chinese keywords** for structure type, dimensions (`15x11`, `宽20 深12`), floor count and block materials.
 
-```bash
-cd c && mingw32-make run
+```powershell
+cd c
+mingw32-make run
 ```
+
+Raylib and Raygui licenses are included in `c/vendor/raylib/LICENSE` and `c/vendor/raygui/LICENSE`.
 
 MIT licensed.
 

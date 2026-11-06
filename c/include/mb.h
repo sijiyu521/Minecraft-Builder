@@ -69,6 +69,22 @@ void mb_sb_printf(SBuf* b, const char* fmt, ...);
 char* mb_sb_done(SBuf* b);
 
 /* ========================================================================== */
+/* terminal text metrics                                                      */
+/* ========================================================================== */
+/*
+ * Layout code has to reason in display columns rather than bytes: CJK glyphs
+ * occupy two cells and ANSI true colour escapes occupy none. Both helpers skip
+ * escape sequences entirely, so a coloured run measures the same as a plain
+ * one and a clipped line can never wrap.
+ */
+
+int mb_display_width(const char* s);
+/* Append the first `n` bytes of `s` to `b`, stopping before the run would
+ * exceed `maxCols` display columns. Never emits half of a wide glyph, so a
+ * clipped line is guaranteed not to wrap. Returns the columns written. */
+int mb_sb_puts_clip(SBuf* b, const char* s, size_t n, int maxCols);
+
+/* ========================================================================== */
 /* UTF-8 <-> UTF-16                                                           */
 /* ========================================================================== */
 /*
@@ -466,6 +482,25 @@ void       mb_llm_default_config(MBLlmConfig* cfg);
 char*      mb_redact(Arena* a, const char* text, const char* apiKey);
 
 /* ========================================================================== */
+/* persisted settings                                                         */
+/* ========================================================================== */
+/*
+ * The endpoint, key and sampling knobs edited in the GUI/TUI survive a restart.
+ * The store is a plain UTF-8 key=value file at
+ *   %APPDATA%\MinecraftBuilder\settings.ini        (Windows)
+ *   $XDG_CONFIG_HOME/minecraft-builder/settings.ini (or ~/.config/...)
+ * Both front ends call mb_config_load() after mb_llm_default_config() and
+ * mb_config_save() when the window/terminal closes.  The *_file() variants take
+ * an explicit path, which the test suite uses so it never touches the real
+ * profile.
+ */
+bool mb_config_path(char* out, size_t cap);
+bool mb_config_load(MBLlmConfig* cfg);
+bool mb_config_save(const MBLlmConfig* cfg);
+bool mb_config_load_file(const char* path, MBLlmConfig* cfg);
+bool mb_config_save_file(const char* path, const MBLlmConfig* cfg);
+
+/* ========================================================================== */
 /* HTTP — the only platform specific module                                   */
 /* ========================================================================== */
 
@@ -617,5 +652,8 @@ bool   mb_bmp_write(const MBFramebuffer* fb, const char* path);
  * false when no window could be created. On non-Windows builds this is a stub
  * that reports failure, so callers need no platform #ifdef of their own. */
 bool mb_preview_open(const MBBuildResult* r, const char* title, bool hideConsole);
+
+/* Desktop application front end. */
+int mb_gui_run(const char* initialPrompt);
 
 #endif /* MB_H */

@@ -127,6 +127,39 @@ static void blend_rect(MBFramebuffer* fb, int x0, int y0, int w, int h,
     }
 }
 
+/* A rounded rectangle, approximated by one horizontal span per row. At a 12px
+   radius the corners read as smooth without any real anti-aliasing work. */
+static void fill_round(MBFramebuffer* fb, int x, int y, int w, int h,
+                       int r, uint32_t col, double alpha)
+{
+    if (w <= 0 || h <= 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r <= 0) { blend_rect(fb, x, y, w, h, col, alpha); return; }
+
+    for (int i = 0; i < h; i++) {
+        double dy = 0.0;
+        if (i < r)           dy = (double)(r - i) - 0.5;
+        else if (i >= h - r) dy = (double)(i - (h - r)) + 0.5;
+
+        int inset = 0;
+        if (dy > 0.0) {
+            double k = (double)r * (double)r - dy * dy;
+            inset = r - (int)(sqrt(k > 0.0 ? k : 0.0) + 0.5);
+        }
+        blend_rect(fb, x + inset, y + i, w - 2 * inset, 1, col, alpha);
+    }
+}
+
+/* A card: a 1px border drawn as the outer rounded rect, then the fill inset by
+   one pixel so the border survives the corners. */
+static void card_fill(MBFramebuffer* fb, int x, int y, int w, int h, int r,
+                      uint32_t fill, double alpha, uint32_t border, double balpha)
+{
+    fill_round(fb, x, y, w, h, r, border, balpha);
+    fill_round(fb, x + 1, y + 1, w - 2, h - 2, r - 1, fill, alpha);
+}
+
 static const char* const PANEL_KEYS[][2] = {
     { "移动",     "W A S D" },
     { "旋转视角", "Q / E"   },
@@ -136,15 +169,17 @@ static const char* const PANEL_KEYS[][2] = {
     { "平移",     "拖动右键" },
     { "缩放",     "滚轮"    },
     { "切换网格", "G"       },
+    { "切换坐标轴", "X"     },
+    { "自动旋转", "O"       },
     { "重置视角", "R"       },
     { "退出",     "Esc"     },
 };
 
 #define PANEL_ROWS ((int)(sizeof PANEL_KEYS / sizeof PANEL_KEYS[0]))
 
-#define TOPBAR_H   34
-#define PANEL_W    232
-#define PANEL_PAD  12
+#define TOPBAR_H   40
+#define PANEL_W    248
+#define PANEL_PAD  14
 #define LINE_H     22
 
 /* ========================================================================== */
@@ -197,89 +232,261 @@ static HFONT make_font(int px, int weight)
 
 static void pv_draw_chrome(Preview* p, MBFramebuffer* fb)
 {
-    const uint32_t panel = 0x0F1114;
-    const uint32_t edge  = 0x3A4048;
+    /* The same tokens the terminal UI uses, so the two front ends feel like one
+       product. Values are 0xRRGGBB. */
+    const uint32_t canvas  = 0x16181D;   /* window backdrop                     */
+    const uint32_t card    = 0x1E2128;   /* panel surface                       */
+    const uint32_t raised  = 0x262A33;   /* chips and the active row            */
+    const uint32_t line    = 0x333845;   /* hairline borders                    */
+    const uint32_t accent  = 0x4CC38A;   /* primary accent — header, active     */
+    const uint32_t accent2 = 0x8B7BF0;   /* secondary accent — badge            */
+    const uint32_t gold    = 0xE0B15E;   /* warm tertiary — headings            */
+    const uint32_t ink     = 0xE7EAF0;
+    const uint32_t soft    = 0xC3C9D6;
+    const uint32_t dim     = 0x8B93A7;
+
+    (void)ink; (void)soft; (void)dim; (void)gold;   /* used by pv_draw_text() */
+
+    int w = fb->width;
+    int h = fb->height;
+
+    /* Legibility wash over the rendered scene, then a vignette-free flat base. */
+    blend_rect(fb, 0, 0, w, h, canvas, 0.30);
 
     /* --- top bar ---------------------------------------------------------- */
-    blend_rect(fb, 0, 0, fb->width, TOPBAR_H, panel, 0.78);
-    blend_rect(fb, 0, TOPBAR_H - 1, fb->width, 1, edge, 0.55);
+    int barH = 46;
+    blend_rect(fb, 0, 0, w, barH, card, 0.96);
+    blend_rect(fb, 0, barH - 1, w, 1, line, 0.9);
+    /* accent hairline along the very top edge — the one loud detail up here */
+    blend_rect(fb, 0, 0, w, 2, accent, 0.85);
 
-    /* --- key reference panel, right hand side ----------------------------- */
-    int ph = PANEL_PAD * 2 + LINE_H * (PANEL_ROWS + 1) + 6;
-    int py = TOPBAR_H + 14;
-    int px = fb->width - PANEL_W - 14;
-    if (px > 16 && py + ph < fb->height - 16) {
-        blend_rect(fb, px, py, PANEL_W, ph, panel, 0.72);
-        blend_rect(fb, px, py, PANEL_W, 1, edge, 0.75);
-        blend_rect(fb, px, py + ph - 1, PANEL_W, 1, edge, 0.5);
+    /* Brand mark: a filled accent square with a lighter core. */
+    fill_round(fb, 16, 14, 20, 20, 6, accent, 0.95);
+    fill_round(fb, 21, 19, 10, 10, 3, card, 1.0);
+
+    /* Engine chip on the right of the bar. */
+    {
+        const char* label = (p->result && p->result->report.isLlm) ? "AI 规划" : "本地规划";
+        int chipW = (label[0] == 'A') ? 74 : 88;
+        int cx = w - chipW - 16;
+        fill_round(fb, cx, 13, chipW, 22, 11,
+                   (p->result && p->result->report.isLlm) ? accent2 : raised, 0.95);
     }
 
-    /* --- camera readout, bottom left -------------------------------------- */
-    char buf[96];
-    snprintf(buf, sizeof buf, "X %d  Y %d  Z %d",
-             (int)floor(p->pivotX + 0.5),
-             (int)floor(p->pivotY + 0.5),
-             (int)floor(p->pivotZ + 0.5));
-    int bw = 8 + (int)strlen(buf) * 9;
-    blend_rect(fb, 14, fb->height - 46, bw, 30, panel, 0.70);
-    blend_rect(fb, 14, fb->height - 46, bw, 1, edge, 0.55);
+    /* --- left panel: controls -------------------------------------------- */
+    int pad = PANEL_PAD;
+    int leftW = PANEL_W;
+    int leftX = pad;
+    int leftY = barH + pad;
+    int leftH = h - leftY - 64;
+    if (leftH < 120) leftH = 120;
+    card_fill(fb, leftX, leftY, leftW, leftH, 12, card, 0.95, line, 0.85);
+
+    /* Row backgrounds for the keybinding list, plus the material swatch strip. */
+    int rowY = leftY + 92;
+    for (int i = 0; i < PANEL_ROWS; i++) {
+        int y = rowY + i * LINE_H;
+        if (y + LINE_H > leftY + leftH - 12) break;
+        if ((i & 1) == 0) {
+            fill_round(fb, leftX + 8, y - 2, leftW - 16, LINE_H - 2, 6, raised, 0.45);
+        }
+    }
+
+    /* --- right panel: scene status --------------------------------------- */
+    int rightW = PANEL_W;
+    int rightX = w - rightW - pad;
+    int rightY = barH + pad;
+    int rightH = h - rightY - 64;
+    if (rightH < 120) rightH = 120;
+    if (rightX > leftX + leftW + 16) {
+        card_fill(fb, rightX, rightY, rightW, rightH, 12, card, 0.95, line, 0.85);
+
+        /* A small proportional bar chart of the build's material mix. */
+        const MBBuildResult* r = p->result;
+        if (r && r->byMaterialCount > 0 && r->total > 0) {
+            int chartX = rightX + 14;
+            int chartW = rightW - 28;
+            int cy = rightY + 96;
+            int maxRows = 6;
+            for (int i = 0; i < r->byMaterialCount && i < maxRows; i++) {
+                double frac = (double)r->byMaterial[i].count / (double)r->total;
+                int barW = (int)(frac * (double)chartW + 0.5);
+                if (barW < 3) barW = 3;
+                uint32_t col = mb_material_color(r->byMaterial[i].id);
+                int y = cy + i * 20;
+                if (y + 16 > rightY + rightH - 12) break;
+                blend_rect(fb, chartX, y + 4, chartW, 8, line, 0.55);
+                fill_round(fb, chartX, y + 4, barW, 8, 4, col, 0.95);
+            }
+        }
+    }
+
+    /* --- bottom status bar ------------------------------------------------ */
+    int sh = 40;
+    blend_rect(fb, 0, h - sh, w, sh, card, 0.96);
+    blend_rect(fb, 0, h - sh, w, 1, line, 0.9);
+    /* soft colour chips showing what this build is made of */
+    {
+        const MBBuildResult* r = p->result;
+        int x = 16;
+        for (int i = 0; r && i < r->byMaterialCount && i < 7; i++) {
+            uint32_t col = mb_material_color(r->byMaterial[i].id);
+            fill_round(fb, x, h - sh + 14, 12, 12, 4, col, 0.95);
+            x += 16;
+        }
+        if (r && r->byMaterialCount > 7) {
+            int moreX = x;
+            (void)moreX;   /* the "+N" text is drawn by pv_draw_text() */
+        }
+    }
+
+    /* a compact grid/axes toggle indicator on the far right of the status bar */
+    {
+        int bx = w - 16 - 12 - 12 - 8;
+        fill_round(fb, bx, h - sh + 14, 12, 12, 3,
+                   p->opt.showGrid ? accent : line, 0.9);
+        fill_round(fb, bx + 20, h - sh + 14, 12, 12, 3,
+                   p->opt.showAxes ? accent2 : line, 0.9);
+    }
 }
 
 static void pv_draw_text(Preview* p, HDC hdc)
 {
     const MBBuildResult* r = p->result;
+    const char* name = (r && r->name && *r->name) ? r->name : "Minecraft Builder";
     Arena* a = &p->text;
     mb_arena_reset(a);
 
-    HFONT fTitle = make_font(16, FW_SEMIBOLD);
-    HFONT fBody  = make_font(13, FW_NORMAL);
-    HFONT fSmall = make_font(12, FW_NORMAL);
+    HFONT fTitle  = make_font(17, FW_SEMIBOLD);
+    HFONT fSub    = make_font(12, FW_NORMAL);
+    HFONT fHead   = make_font(13, FW_SEMIBOLD);
+    HFONT fBody   = make_font(13, FW_NORMAL);
+    HFONT fSmall  = make_font(12, FW_NORMAL);
+    HFONT fMono   = make_font(12, FW_NORMAL);
 
-    const COLORREF ink   = RGB(0xEC, 0xEF, 0xF2);
-    const COLORREF dim   = RGB(0xA8, 0xB0, 0xB8);
-    const COLORREF faint = RGB(0x7C, 0x86, 0x90);
-    const COLORREF key   = RGB(0x9E, 0xD6, 0x7E);
+    const COLORREF ink    = RGB(0xE7, 0xEA, 0xF0);
+    const COLORREF soft   = RGB(0xC3, 0xC9, 0xD6);
+    const COLORREF dim    = RGB(0x8B, 0x93, 0xA7);
+    const COLORREF accent = RGB(0x4C, 0xC3, 0x8A);
+    const COLORREF accent2= RGB(0x8B, 0x7B, 0xF0);
+    const COLORREF gold   = RGB(0xE0, 0xB1, 0x5E);
 
-    /* --- title bar -------------------------------------------------------- */
-    const char* name = (r->name && *r->name) ? r->name : "Minecraft Builder";
-    text_draw(hdc, a, fTitle, 14, 8, name, ink);
+    int w = p->w, h = p->h;
+    const int barH = 46;
+    const int pad  = PANEL_PAD;
 
-    char info[192];
-    snprintf(info, sizeof info, "%d x %d x %d   %d 方块   %d 种材质",
-             r->size.x, r->size.y, r->size.z,
-             (int)r->blockCount, (int)r->paletteCount);
-    text_draw(hdc, a, fSmall, 14 + (int)strlen(name) * 9 + 16, 13, info, faint);
+    /* --- top bar ---------------------------------------------------------- */
+    text_draw(hdc, a, fTitle, 46, 12, name, ink);
+    {
+        char sub[160];
+        if (r) {
+            snprintf(sub, sizeof sub, "%d×%d×%d · %d 方块 · %d 种材质",
+                     r->size.x, r->size.y, r->size.z, r->total, r->byMaterialCount);
+        } else {
+            snprintf(sub, sizeof sub, "3D 预览");
+        }
+        text_draw(hdc, a, fSub, 46, 31, sub, dim);
+        /* The chip background was painted in pv_draw_chrome(). */
+        const char* chip = (r && r->report.isLlm) ? "AI 规划" : "本地规划";
+        int chipW = (chip[0] == 'A') ? 74 : 88;
+        text_draw(hdc, a, fSmall, w - chipW - 16 + 14, 17, chip,
+                  (r && r->report.isLlm) ? RGB(0x14, 0x12, 0x24) : soft);
+    }
 
-    /* --- key panel -------------------------------------------------------- */
-    int py = TOPBAR_H + 14;
-    int px = p->w - PANEL_W - 14;
-    if (px > 16 && py + 400 < p->h) {
-        text_draw(hdc, a, fTitle, px + PANEL_PAD, py + PANEL_PAD - 2, "操作说明", ink);
-        for (int i = 0; i < PANEL_ROWS; i++) {
-            int rowY = py + PANEL_PAD + LINE_H * (i + 1) + 4;
-            text_draw(hdc, a, fBody, px + PANEL_PAD, rowY, PANEL_KEYS[i][0], dim);
-            text_draw_right(hdc, a, fBody, px + PANEL_PAD, rowY,
-                            PANEL_W - PANEL_PAD * 2, LINE_H, PANEL_KEYS[i][1], key);
+    /* --- left card: keybinds --------------------------------------------- */
+    int leftX = pad, leftY = barH + pad, leftW = PANEL_W;
+    text_draw(hdc, a, fHead, leftX + 16, leftY + 14, "操作指引", gold);
+    text_draw(hdc, a, fSmall, leftX + 16, leftY + 36, "键鼠控制", dim);
+
+    int rowY = leftY + 92;
+    for (int i = 0; i < PANEL_ROWS; i++) {
+        int y = rowY + i * LINE_H;
+        if (y + LINE_H > leftY + (h - leftY - 64) - 12) break;
+        text_draw(hdc, a, fBody, leftX + 16, y + 1, PANEL_KEYS[i][0], soft);
+        text_draw_right(hdc, a, fMono, leftX + 16, y, leftW - 32, LINE_H,
+                        PANEL_KEYS[i][1], gold);
+    }
+
+    /* --- right card: scene status ---------------------------------------- */
+    int rightW = PANEL_W, rightX = w - rightW - pad, rightY = barH + pad;
+    if (rightX > leftX + leftW + 16) {
+        text_draw(hdc, a, fHead, rightX + 16, rightY + 14, "场景信息", gold);
+        text_draw(hdc, a, fSmall, rightX + 16, rightY + 36, "实时状态", dim);
+
+        char buf[160];
+        int ly = rightY + 62;
+        const int step = 22;
+
+        snprintf(buf, sizeof buf, "%.1f", p->dist);
+        text_draw(hdc, a, fSmall, rightX + 16, ly, "相机距离", dim);
+        text_draw_right(hdc, a, fMono, rightX + 16, ly, rightW - 32, 16, buf, soft);
+        ly += step;
+
+        text_draw(hdc, a, fSmall, rightX + 16, ly, "网格", dim);
+        text_draw_right(hdc, a, fMono, rightX + 16, ly, rightW - 32, 16,
+                        p->opt.showGrid ? "开" : "关",
+                        p->opt.showGrid ? accent : dim);
+        ly += step;
+
+        text_draw(hdc, a, fSmall, rightX + 16, ly, "坐标轴", dim);
+        text_draw_right(hdc, a, fMono, rightX + 16, ly, rightW - 32, 16,
+                        p->opt.showAxes ? "开" : "关",
+                        p->opt.showAxes ? accent2 : dim);
+        ly += step;
+
+        text_draw(hdc, a, fSmall, rightX + 16, ly, "自动旋转", dim);
+        text_draw_right(hdc, a, fMono, rightX + 16, ly, rightW - 32, 16,
+                        p->opt.autoOrbit ? "开" : "关",
+                        p->opt.autoOrbit ? accent : dim);
+
+        /* material distribution heading sits just above the bars */
+        text_draw(hdc, a, fSmall, rightX + 16, rightY + 78, "材质占比", dim);
+
+        if (r && r->byMaterialCount > 0 && r->total > 0) {
+            int cy = rightY + 96;
+            for (int i = 0; i < r->byMaterialCount && i < 6; i++) {
+                int y = cy + i * 20;
+                if (y + 16 > rightY + (h - rightY - 64) - 12) break;
+                const char* nm = mb_material_name(r->byMaterial[i].id);
+                double pct = 100.0 * (double)r->byMaterial[i].count / (double)r->total;
+                char val[48];
+                snprintf(val, sizeof val, "%.0f%%", pct);
+                text_draw(hdc, a, fSmall, rightX + 16, y, nm, soft);
+                text_draw_right(hdc, a, fMono, rightX + 16, y, rightW - 32, 16, val, dim);
+            }
+        } else {
+            text_draw(hdc, a, fSmall, rightX + 16, rightY + 96, "暂无数据", dim);
         }
     }
 
-    /* --- readout ---------------------------------------------------------- */
-    char buf[96];
-    snprintf(buf, sizeof buf, "X %d  Y %d  Z %d",
-             (int)floor(p->pivotX + 0.5),
-             (int)floor(p->pivotY + 0.5),
-             (int)floor(p->pivotZ + 0.5));
-    text_draw(hdc, a, fBody, 14 + 10, p->h - 46 + 7, buf, ink);
+    /* --- bottom status bar ------------------------------------------------ */
+    int sh = 40;
+    int by = h - sh + 11;
 
-    char hint[128];
-    snprintf(hint, sizeof hint, "距离 %.1f   视角 %d%%   网格 %s",
-             p->dist, (int)(p->fov * 180.0 / 3.14159265358979),
-             p->opt.showGrid ? "开" : "关");
-    text_draw(hdc, a, fSmall, 14 + 10 + 150, p->h - 46 + 8, hint, faint);
+    char coord[128];
+    snprintf(coord, sizeof coord, "视角 X %.0f  Y %.0f  Z %.0f",
+             p->pivotX, p->pivotY, p->pivotZ);
+    text_draw(hdc, a, fSmall, 16, by, coord, soft);
+
+    if (r && r->byMaterialCount > 7) {
+        char more[32];
+        snprintf(more, sizeof more, "+%d", r->byMaterialCount - 7);
+        text_draw(hdc, a, fSmall, 16 + 7 * 16 + 2, by, more, dim);
+    }
+
+    /* toggles legend on the far right, next to the two chips */
+    {
+        int bx = w - 16 - 12 - 12 - 8;
+        text_draw_right(hdc, a, fSmall, bx - 190, h - sh + 9, 180, 22,
+                        "网格   坐标轴", dim);
+    }
 
     DeleteObject(fTitle);
+    DeleteObject(fSub);
+    DeleteObject(fHead);
     DeleteObject(fBody);
     DeleteObject(fSmall);
+    DeleteObject(fMono);
 }
 
 /* ========================================================================== */

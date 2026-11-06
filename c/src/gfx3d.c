@@ -610,9 +610,9 @@ static void emit_quad(MBFramebuffer* fb, const Raster* R,
 static void draw_ground(MBFramebuffer* fb, const Raster* R,
                         double cx, double cz, double extent)
 {
-    uint32_t plane = rgb(0x33, 0x36, 0x2A);
-    uint32_t minor = rgb(0x43, 0x48, 0x39);
-    uint32_t major = rgb(0x5C, 0x64, 0x50);
+    uint32_t plane = rgb(0x1E, 0x21, 0x28);
+    uint32_t minor = rgb(0x2B, 0x30, 0x3A);
+    uint32_t major = rgb(0x41, 0x49, 0x58);
 
     double x0 = cx - extent, x1 = cx + extent;
     double z0 = cz - extent, z1 = cz + extent;
@@ -651,9 +651,9 @@ static void draw_axes(MBFramebuffer* fb, const Raster* R, double len)
     if (len < 3.0) len = 3.0;
     len *= 0.35;
     const double t = 0.06;
-    uint32_t ax = rgb(0xD0, 0x4E, 0x4E);
-    uint32_t ay = rgb(0x6E, 0xC8, 0x64);
-    uint32_t az = rgb(0x5A, 0x8A, 0xEB);
+    uint32_t ax = rgb(0xE2, 0x60, 0x60);
+    uint32_t ay = rgb(0x74, 0xC3, 0x8A);
+    uint32_t az = rgb(0x68, 0x96, 0xF4);
 
     emit_quad(fb, R, 0, -t, -t, len, -t, -t, len, t, t, 0, t, t, ax, 0);
     emit_quad(fb, R, -t, 0, -t, len, 0, -t, len, 0, t, -t, 0, t, ax, 0);
@@ -845,7 +845,7 @@ static void block_faces(MBFramebuffer* fb, Raster* R, const MBVoxel* v,
 void mb_render_scene(Arena* a, MBFramebuffer* fb, const MBBuildResult* r,
                      const MBCamera* cam, const MBSceneOptions* opt)
 {
-    mb_fb_clear(fb, rgb(0x10, 0x12, 0x15), rgb(0x2A, 0x2C, 0x24));
+    mb_fb_clear(fb, rgb(0x12, 0x14, 0x18), rgb(0x1B, 0x1E, 0x24));
 
     Raster solid;
     raster_init(&solid, cam, fb, true, 1.0);
@@ -867,7 +867,7 @@ void mb_render_scene(Arena* a, MBFramebuffer* fb, const MBBuildResult* r,
         double hue = r->size.x > r->size.z ? (double)r->size.x : (double)r->size.z;
         solid.fogStart = d + hue * 0.6;
         solid.fogEnd   = solid.fogStart + extent * 1.6;
-        solid.fogColor = rgb(0x26, 0x28, 0x20);
+        solid.fogColor = rgb(0x1B, 0x1E, 0x24);
     }
 
     if (opt->showGrid) {

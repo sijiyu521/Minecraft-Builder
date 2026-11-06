@@ -633,6 +633,18 @@ static void test_helpers(Arena* a)
                (long)(uint32_t)2810436605u);
     expect_int("UTF-16 length of a mixed string",
                (long)mb_u16_len("\x61\xe4\xb8\xad\x62"), 3);
+    expect_int("terminal width counts CJK cells",
+               mb_display_width("A\xe4\xb8\xad" "B"), 4);
+    expect_int("terminal width ignores ANSI colours",
+               mb_display_width("\x1b[38;2;1;2;3m\xe4\xb8\xad\x1b[0m"), 2);
+    {
+        SBuf clipped;
+        mb_sb_init(&clipped, a);
+        int width = mb_sb_puts_clip(&clipped, "ab\xe4\xb8\xad" "cd", 7, 3);
+        expect_int("clipping never emits half a CJK glyph", width, 2);
+        expect_str("clipping stops before an oversized CJK glyph",
+                   mb_sb_done(&clipped), "ab");
+    }
 
     expect_int("clamp above the range", mb_clamp_int(99, 0, 10), 10);
     expect_int("clamp below the range", mb_clamp_int(-5, 0, 10), 0);
@@ -688,6 +700,79 @@ static void test_helpers(Arena* a)
                "#ff00ff");
     check("materials carry a display name",
           mb_material_name("minecraft:stone_bricks")[0] != '\0', "empty name");
+}
+
+/* ========================================================================== */
+
+/*
+ * The settings store is the only module that touches the user profile, so it is
+ * tested through the explicit-path variants. That keeps `mingw32-make test`
+ * hermetic: no real %APPDATA%\MinecraftBuilder\settings.ini is ever touched.
+ */
+static void test_settings_store(void)
+{
+    section("persisted model settings");
+
+    char defaultPath[512];
+    check("the default settings path resolves",
+          mb_config_path(defaultPath, sizeof(defaultPath))
+              && strstr(defaultPath, "settings.ini") != NULL,
+          "mb_config_path returned nothing usable");
+
+    const char* path = "build/test-settings.ini";
+    remove(path);
+
+    MBLlmConfig cfg;
+    mb_llm_default_config(&cfg);
+    snprintf(cfg.baseUrl, sizeof(cfg.baseUrl), "%s", "https://example.test/v1");
+    snprintf(cfg.model, sizeof(cfg.model), "%s", "model-x");
+    snprintf(cfg.apiKey, sizeof(cfg.apiKey), "%s", "sk-test=with=equals");
+    cfg.temperature = 0.45;
+    cfg.jsonMode = false;
+
+    check("settings save reports success", mb_config_save_file(path, &cfg), "save failed");
+
+    MBLlmConfig loaded;
+    mb_llm_default_config(&loaded);
+    loaded.temperature = 1.0;
+    loaded.jsonMode = true;
+    check("settings load reports success", mb_config_load_file(path, &loaded), "load failed");
+    expect_str("the base URL survives a round trip", loaded.baseUrl, "https://example.test/v1");
+    expect_str("the model id survives a round trip", loaded.model, "model-x");
+    expect_str("the API key survives a round trip", loaded.apiKey, "sk-test=with=equals");
+    check("temperature survives a round trip",
+          loaded.temperature > 0.449 && loaded.temperature < 0.451, "wrong temperature");
+    check("json mode survives a round trip", !loaded.jsonMode, "json mode flipped");
+
+    check("a missing file does not fabricate settings",
+          !mb_config_load_file("build/does-not-exist.ini", &loaded),
+          "expected a missing file to fail");
+
+    FILE* f = fopen(path, "wb");
+    check("the settings file can be rewritten by hand", f != NULL, "fopen failed");
+    if (f) {
+        fputs("# comment\r\n"
+              "\r\n"
+              "base_url=  https://trimmed.test/v1  \r\n"
+              "temperature=9\r\n"
+              "json_mode=on\r\n"
+              "oops-no-equals\r\n"
+              "unknown_key=ignored\r\n"
+              "model = qwen2.5:7b\r\n", f);
+        fclose(f);
+
+        MBLlmConfig loose;
+        memset(&loose, 0, sizeof loose);
+        check("a hand-edited file still loads", mb_config_load_file(path, &loose), "load failed");
+        expect_str("whitespace around values is trimmed", loose.baseUrl,
+                   "https://trimmed.test/v1");
+        expect_str("whitespace around keys is trimmed", loose.model, "qwen2.5:7b");
+        check("out-of-range temperature is clamped", loose.temperature == 2.0,
+              "temperature was not clamped");
+        check("textual json_mode values are accepted", loose.jsonMode, "on was not recognised");
+    }
+
+    remove(path);
 }
 
 /* ========================================================================== */
@@ -792,6 +877,7 @@ int main(void)
     test_llm_build(&arena);
     test_exporters(&arena, builds[0]);
     test_helpers(&arena);
+    test_settings_store();
     test_preview(&arena, builds[0]);
 
     printf("\n%s  %d checks, %d failures\n",

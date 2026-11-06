@@ -31,6 +31,8 @@ static const char* TAB_NAMES[TAB_COUNT] = {
     "3D 预览", "平面图", "报告", "导出", "设置"
 };
 
+static const char* TAB_ICONS[TAB_COUNT] = { "◆", "▦", "≡", "⇩", "⚙" };
+
 static const char* DEFAULT_PROMPT =
     "帮我建一座现代风格的两层别墅，白墙大落地窗，尺寸 15x11";
 
@@ -85,65 +87,47 @@ typedef struct {
 /* text helpers                                                               */
 /* ========================================================================== */
 
-static int utf8_cp_len(unsigned char c)
-{
-    if (c < 0x80) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;
-}
-
-static unsigned int utf8_decode(const char* s, int* len)
-{
-    const unsigned char* p = (const unsigned char*)s;
-    int n = utf8_cp_len(p[0]);
-    if (n == 1) { *len = 1; return p[0]; }
-    unsigned int cp = (unsigned int)(p[0] & (0xFF >> (n + 1)));
-    for (int i = 1; i < n; i++) {
-        if ((p[i] & 0xC0) != 0x80) { *len = 1; return p[0]; }
-        cp = (cp << 6) | (unsigned int)(p[i] & 0x3F);
-    }
-    *len = n;
-    return cp;
-}
-
 /* Display columns, not bytes. CJK is two cells wide, and ANSI escape sequences
-   occupy no cells at all — mixed in with the text they must not be counted. */
+   occupy no cells at all — mixed in with the text they must not be counted.
+   The measurement lives in util.c so the renderer and the window agree with
+   this frame on what "fits" means. */
 static int display_width(const char* s)
 {
-    int w = 0;
-    while (*s) {
-        if ((unsigned char)*s == 0x1b && s[1] == '[') {
-            s += 2;
-            while (*s && !((*s >= '@' && *s <= '~'))) s++;
-            if (*s) s++;
-            continue;
-        }
-        int n = 0;
-        unsigned int cp = utf8_decode(s, &n);
-        if (cp < 0x1100)                                  w += 1;
-        else if (cp >= 0x1100 && cp <= 0x115F)            w += 2;
-        else if (cp >= 0x2E80 && cp <= 0xA4CF)            w += 2;
-        else if (cp >= 0xAC00 && cp <= 0xD7A3)            w += 2;
-        else if (cp >= 0xF900 && cp <= 0xFAFF)            w += 2;
-        else if (cp >= 0xFE30 && cp <= 0xFE6F)            w += 2;
-        else if (cp >= 0xFF00 && cp <= 0xFF60)            w += 2;
-        else if (cp >= 0xFFE0 && cp <= 0xFFE6)            w += 2;
-        else if (cp >= 0x1F300 && cp <= 0x1FAFF)          w += 2;
-        else                                              w += 1;
-        s += n;
-    }
-    return w;
+    return mb_display_width(s);
 }
 
-static void line_pad(SBuf* b, const char* text, int cols)
+/* ========================================================================== */
+/* theme                                                                      */
+/* ========================================================================== */
+/*
+ * One palette, shared by every surface: the terminal frame, the isometric
+ * preview (render.c) and the window chrome (preview.c) all agree on these
+ * values, so the product reads as a single piece of software.
+ */
+
+#define P_CANVAS   22, 24, 29
+#define P_CARD     30, 33, 40
+#define P_PANEL    38, 42, 51
+#define P_ROW      44, 49, 60
+#define P_LINE     51, 56, 69
+#define P_INK      231, 234, 240
+#define P_SOFT     195, 201, 214
+#define P_DIM      139, 147, 167
+#define P_ACCENT   76, 195, 138
+#define P_ACCENT2  139, 123, 240
+#define P_GOLD     224, 177, 94
+#define P_ERR      255, 122, 122
+#define P_ONACC    16, 24, 19
+
+static void col_fg(SBuf* b, int r, int g, int bl)
 {
-    mb_sb_puts(b, text);
-    int w = display_width(text);
-    for (int i = w; i < cols - 1; i++) mb_sb_putc(b, ' ');
-    mb_sb_puts(b, "\x1b[0m\x1b[K\n");
+    mb_sb_printf(b, "\x1b[38;2;%d;%d;%dm", r, g, bl);
 }
+static void col_bg(SBuf* b, int r, int g, int bl)
+{
+    mb_sb_printf(b, "\x1b[48;2;%d;%d;%dm", r, g, bl);
+}
+static void col_reset(SBuf* b) { mb_sb_puts(b, "\x1b[0m"); }
 
 static const char* join_list(Arena* a, const char** items, int count)
 {
@@ -238,71 +222,173 @@ static void regenerate(App* app, Arena* model)
 static void draw_tabs(SBuf* b, const App* app, int cols)
 {
     (void)cols;
+    mb_sb_puts(b, "\x1b[0m");
     for (int i = 0; i < TAB_COUNT; i++) {
-        char label[32];
-        snprintf(label, sizeof(label), " %d %s ", i + 1, TAB_NAMES[i]);
-        if (i == app->tab) mb_sb_puts(b, "\x1b[7m\x1b[1m");
-        else               mb_sb_puts(b, "\x1b[0m\x1b[38;2;150;156;172m");
-        mb_sb_puts(b, label);
-        mb_sb_puts(b, "\x1b[0m ");
+        char label[64];
+        snprintf(label, sizeof(label), " %s %s ", TAB_ICONS[i], TAB_NAMES[i]);
+        if (i == app->tab) {
+            col_bg(b, P_ACCENT);
+            col_fg(b, P_ONACC);
+            mb_sb_puts(b, "\x1b[1m");
+            mb_sb_puts(b, label);
+            col_reset(b);
+        } else {
+            col_fg(b, P_DIM);
+            mb_sb_puts(b, label);
+            col_reset(b);
+        }
+        mb_sb_putc(b, ' ');
     }
-    mb_sb_puts(b, "\x1b[0m\x1b[K\n");
+    col_reset(b);
+    mb_sb_puts(b, "\x1b[K\n");
+}
+
+/* A section heading inside a card: a small accent marker plus a bold title. */
+static void card_title(SBuf* b, const char* text, int cols)
+{
+    col_fg(b, P_ACCENT);
+    mb_sb_puts(b, "  ▎ ");
+    col_fg(b, P_INK);
+    mb_sb_puts(b, "\x1b[1m");
+    int tw = mb_sb_puts_clip(b, text, strlen(text), cols - 4);
+    col_reset(b);
+    int w = 4 + tw;
+    for (int i = w; i < cols; i++) mb_sb_putc(b, ' ');
+    mb_sb_puts(b, "\x1b[K\n");
+}
+
+/* A key/value line: muted key on the left, ink value after it. Both fields are
+   clipped to the card, so a long prompt or Base URL truncates instead of
+   wrapping the whole frame. */
+#define KV_KEYW 13
+static void card_kv(SBuf* b, const char* key, const char* value, int cols)
+{
+    col_fg(b, P_DIM);
+    mb_sb_puts(b, "   ");
+    int kw = mb_sb_puts_clip(b, key, strlen(key), KV_KEYW);
+    for (int i = kw; i < KV_KEYW; i++) mb_sb_putc(b, ' ');
+    col_fg(b, P_SOFT);
+    int avail = cols - (3 + KV_KEYW);
+    if (avail < 0) avail = 0;
+    int vw = mb_sb_puts_clip(b, value, strlen(value), avail);
+    int used = 3 + KV_KEYW + vw;
+    col_reset(b);
+    for (int i = used; i < cols; i++) mb_sb_putc(b, ' ');
+    mb_sb_puts(b, "\x1b[K\n");
+}
+
+/* A selectable row. The active row gets a filled accent bar and a highlighted
+   background, so the cursor is unmistakable at a glance. The label and the
+   trailing value are clipped to the card width. */
+#define ROW_FIELDW 40
+static void card_row(SBuf* b, bool active, const char* left, const char* right, int cols)
+{
+    int fieldW = ROW_FIELDW < cols ? ROW_FIELDW : cols;
+    int leftMax = fieldW - 4;
+    if (leftMax < 1) leftMax = 1;
+
+    if (active) {
+        col_bg(b, P_ROW);
+        col_fg(b, P_ACCENT);
+        mb_sb_puts(b, "  ▎ ");
+        col_fg(b, P_INK);
+        mb_sb_puts(b, "\x1b[1m");
+        int w = mb_sb_puts_clip(b, left, strlen(left), leftMax);
+        mb_sb_puts(b, "\x1b[22m");
+        col_fg(b, P_SOFT);
+        for (int i = 4 + w; i < fieldW; i++) mb_sb_putc(b, ' ');
+    } else {
+        col_fg(b, P_DIM);
+        mb_sb_puts(b, "    ");
+        int w = mb_sb_puts_clip(b, left, strlen(left), leftMax);
+        for (int i = 4 + w; i < fieldW; i++) mb_sb_putc(b, ' ');
+    }
+
+    int used = fieldW;
+    if (right) {
+        int avail = cols - fieldW;
+        if (avail > 0) used = fieldW + mb_sb_puts_clip(b, right, strlen(right), avail);
+    }
+    for (int i = used; i < cols; i++) mb_sb_putc(b, ' ');
+    col_reset(b);
+    mb_sb_puts(b, "\x1b[K\n");
+}
+
+static void card_blank(SBuf* b, int cols)
+{
+    (void)cols;
+    mb_sb_puts(b, "\x1b[K\n");
 }
 
 static void draw_body_3d(SBuf* b, App* app, Arena* frame, int cols, int bodyRows)
 {
     const MBBuildResult* r = app->result;
     if (!r) {
-        line_pad(b, "  （没有可预览的建筑：请修正上面的错误后按 Enter 重试）", cols);
-        for (int i = 1; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
+        card_blank(b, cols);
+        card_kv(b, "预览", "没有可预览的建筑 — 修正错误后按 Enter 重试", cols);
+        for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
 
-    bool withLegend = cols >= 118;
-    int isoCols = withLegend ? cols - 46 : cols;
+    /* The legend rows are laid out to 35 columns (see LEGEND_* in render.c), so
+       the panel must reserve at least 36 or the last column gets clipped. */
+    bool withLegend = cols >= 104;
+    int legendW = withLegend ? (cols >= 130 ? 44 : 36) : 0;
+    int isoCols = cols - (withLegend ? legendW + 3 : 0);
+    if (isoCols < 20) { withLegend = false; legendW = 0; isoCols = cols; }
 
     char* iso = mb_render_iso(frame, r, &app->view, isoCols, bodyRows);
     char* legend = withLegend ? mb_render_legend(frame, r) : NULL;
 
-    /* Split both blocks into lines and interleave them side by side. */
     const char* isoPtr = iso;
     const char* legPtr = legend;
     for (int i = 0; i < bodyRows; i++) {
         const char* isoEnd = strchr(isoPtr, '\n');
         const char* legEnd = legPtr ? strchr(legPtr, '\n') : NULL;
 
-        if (isoEnd) {
-            mb_sb_write(b, isoPtr, (size_t)(isoEnd - isoPtr));
-        } else {
-            for (int k = 0; k < isoCols; k++) mb_sb_putc(b, ' ');
-        }
+        if (isoEnd) mb_sb_write(b, isoPtr, (size_t)(isoEnd - isoPtr));
+        else        for (int k = 0; k < isoCols; k++) mb_sb_putc(b, ' ');
 
         if (withLegend) {
-            mb_sb_puts(b, "\x1b[0m\x1b[38;2;90;96;112m│\x1b[0m ");
-            if (legEnd) mb_sb_write(b, legPtr, (size_t)(legEnd - legPtr));
+            col_fg(b, P_LINE);
+            mb_sb_puts(b, " │ ");
+            col_reset(b);
+            if (legEnd) {
+                /* Hard clamp: the legend generator already fits its budget, but
+                   the panel is the authority — clip and pad here so a stray wide
+                   glyph can never push the row past `legendW` and wrap. */
+                int lw = mb_sb_puts_clip(b, legPtr, (size_t)(legEnd - legPtr), legendW);
+                for (int k = lw; k < legendW; k++) mb_sb_putc(b, ' ');
+            } else if (i == 0) {
+                col_fg(b, P_DIM);
+                mb_sb_puts(b, "（无材料）");
+                col_reset(b);
+            }
         }
-        mb_sb_puts(b, "\x1b[0m\x1b[K\n");
+        col_reset(b);
+        mb_sb_puts(b, "\x1b[K\n");
 
         if (isoEnd) isoPtr = isoEnd + 1;
         if (legEnd) legPtr = legEnd + 1;
         if (!*isoPtr) isoPtr = "";
     }
-    (void)app;
 }
 
 static void draw_body_plan(SBuf* b, App* app, Arena* frame, int cols, int bodyRows)
 {
     const MBBuildResult* r = app->result;
     if (!r) {
-        line_pad(b, "  （没有可绘制的建筑）", cols);
-        for (int i = 1; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
+        card_blank(b, cols);
+        card_kv(b, "平面图", "没有可绘制的建筑", cols);
+        for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
 
     char head[128];
-    snprintf(head, sizeof(head), "  第 %d 层 / 共 %d 层      [ ] 切换楼层",
-             app->layer, r->size.y > 0 ? r->size.y - 1 : 0);
-    line_pad(b, head, cols);
+    int totalLayers = r->size.y > 0 ? r->size.y - 1 : 0;
+    snprintf(head, sizeof(head), "平面图 · 第 %d 层 / 共 %d 层   [ ] 切换楼层",
+             app->layer, totalLayers);
+    card_title(b, head, cols);
 
     char* plan = mb_render_slice(frame, r, app->layer, cols, bodyRows - 1);
     const char* p = plan;
@@ -322,8 +408,9 @@ static void draw_body_report(SBuf* b, App* app, Arena* frame, int cols, int body
 {
     const MBBuildResult* r = app->result;
     if (!r) {
-        line_pad(b, "  （没有报告：请修正上面的错误后按 Enter 重试）", cols);
-        for (int i = 1; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
+        card_blank(b, cols);
+        card_kv(b, "报告", "没有报告 — 修正错误后按 Enter 重试", cols);
+        for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
 
@@ -331,48 +418,68 @@ static void draw_body_report(SBuf* b, App* app, Arena* frame, int cols, int body
     char line[1024];
     int used = 0;
 
-#define RPT(fmt, ...)                                                        \
+#define RPT(key, fmt, ...)                                                   \
     do {                                                                     \
         if (used < bodyRows) {                                               \
             snprintf(line, sizeof(line), fmt, __VA_ARGS__);                  \
-            line_pad(b, line, cols);                                         \
+            card_kv(b, key, line, cols);                                     \
             used++;                                                          \
         }                                                                    \
     } while (0)
 
-    line_pad(b, "", cols); used++;
-    RPT("  %s", r->name);
-    RPT("  %s", r->summary);
-    line_pad(b, "", cols); used++;
-    RPT("  提示词      %s", app->prompt);
-    RPT("  建筑类型    %s (%s)", p->structureLabel, p->structure);
-    RPT("  体量        %s", p->scale);
-    RPT("  种子        %u", (unsigned)p->seed);
-    RPT("  识别关键词  %s", join_list(frame, p->keywords, p->keywordCount));
-    RPT("  识别材质    %s", join_list(frame, p->detectedMaterials, p->detectedMaterialCount));
-    RPT("  修饰语      %s", join_list(frame, p->modifiers, p->modifierCount));
-    line_pad(b, "", cols); used++;
-    RPT("  尺寸        宽 %d · 高 %d · 深 %d", r->size.x, r->size.y, r->size.z);
-    RPT("  方块总数    %d", r->total);
-    RPT("  材质种类    %d", r->byMaterialCount);
+#define RPTV(key, val)                                                       \
+    do {                                                                     \
+        if (used < bodyRows) { card_kv(b, key, (val), cols); used++; }       \
+    } while (0)
+
+#define SECTION(title)                                                       \
+    do {                                                                     \
+        if (used < bodyRows) { card_blank(b, cols); used++; }                \
+        if (used < bodyRows) { card_title(b, title, cols); used++; }         \
+    } while (0)
+
+    SECTION("方案");
+    RPT("名称", "%s", r->name);
+    RPT("摘要", "%s", r->summary);
+
+    SECTION("原始输入");
+    RPT("提示词", "%s", app->prompt);
+    RPT("建筑类型", "%s", p->structureLabel);
+    RPT("体量", "%s", p->scale);
+    {
+        char sd[32];
+        snprintf(sd, sizeof(sd), "%u", (unsigned)p->seed);
+        RPTV("种子", sd);
+    }
+
+    SECTION("识别结果");
+    RPTV("关键词", join_list(frame, p->keywords, p->keywordCount));
+    RPTV("材质", join_list(frame, p->detectedMaterials, p->detectedMaterialCount));
+    RPTV("修饰语", join_list(frame, p->modifiers, p->modifierCount));
+
+    SECTION("几何统计");
+    RPT("尺寸", "宽 %d · 高 %d · 深 %d", r->size.x, r->size.y, r->size.z);
+    RPT("方块总数", "%d 块", r->total);
+    RPT("材质种类", "%d 种", r->byMaterialCount);
 
     if (p->isLlm) {
-        line_pad(b, "", cols); used++;
-        RPT("  规划引擎    大模型（%s @ %s，%ld ms）",
-            p->hasLlmUser ? p->llm.model : "未知",
-            p->hasLlmUser ? p->llm.endpoint : "未知",
-            p->hasLlmUser ? p->llm.latencyMs : 0L);
+        SECTION("规划引擎");
+        RPT("模式", "%s", "大模型");
+        RPT("模型", "%s", p->hasLlmUser ? p->llm.model : "未知");
+        RPT("接口", "%s", p->hasLlmUser ? p->llm.endpoint : "未知");
         for (int i = 0; i < p->noteCount && used < bodyRows; i++) {
-            RPT("  · %s", p->notes[i]);
+            RPT("备注", "%s", p->notes[i]);
         }
     } else {
-        line_pad(b, "", cols); used++;
-        RPT("  规划引擎    %s", "本地规则引擎（确定性，无需联网）");
+        SECTION("规划引擎");
+        RPT("模式", "%s", "本地规则引擎（确定性 · 离线）");
         for (int i = 0; i < p->noteCount && used < bodyRows; i++) {
-            RPT("  · %s", p->notes[i]);
+            RPT("备注", "%s", p->notes[i]);
         }
     }
 #undef RPT
+#undef RPTV
+#undef SECTION
 
     for (; used < bodyRows; used++) mb_sb_puts(b, "\x1b[K\n");
 }
@@ -400,8 +507,9 @@ static void draw_body_export(SBuf* b, App* app, Arena* frame, int cols, int body
 {
     (void)frame;
     if (!app->result) {
-        line_pad(b, "  （没有可导出的建筑）", cols);
-        for (int i = 1; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
+        card_blank(b, cols);
+        card_kv(b, "导出", "没有可导出的建筑", cols);
+        for (int i = 2; i < bodyRows; i++) mb_sb_puts(b, "\x1b[K\n");
         return;
     }
 
@@ -409,33 +517,38 @@ static void draw_body_export(SBuf* b, App* app, Arena* frame, int cols, int body
     export_base_name(app, base, sizeof(base));
 
     int used = 0;
-    line_pad(b, "", cols); used++;
-    line_pad(b, "  选中要写出的文件，按 Enter 保存到当前目录：", cols); used++;
+    card_title(b, "导出文件", cols); used++;
+    card_kv(b, "提示", "选中后按 Enter 写出到当前目录：", cols); used++;
+    card_blank(b, cols); used++;
 
     for (int i = 0; i < EX_COUNT && used < bodyRows; i++) {
-        char line[512];
-        char name[192];
-        snprintf(name, sizeof(name), "%s%s", base, EX_NAMES[i]);
-        if (i == app->exportRow) {
-            snprintf(line, sizeof(line), "  \x1b[7m \xe2\x96\xb6 %-14s %-38s \x1b[0m",
-                     EX_NAMES[i], name);
-        } else {
-            snprintf(line, sizeof(line), "    %-14s %-38s", EX_NAMES[i], name);
+        char left[256];
+        snprintf(left, sizeof(left), "%s", EX_NAMES[i]);
+        card_row(b, i == app->exportRow, left, NULL, cols);
+        used++;
+        if (used < bodyRows) {
+            char desc[320];
+            snprintf(desc, sizeof(desc), "%s%s", base, EX_NAMES[i]);
+            col_fg(b, P_DIM);
+            mb_sb_puts(b, "      ");
+            mb_sb_puts(b, EX_DESCS[i]);
+            mb_sb_puts(b, "  ");
+            col_fg(b, P_ACCENT2);
+            mb_sb_puts(b, desc);
+            col_reset(b);
+            mb_sb_puts(b, "\x1b[K\n");
+            used++;
         }
-        line_pad(b, line, cols);
-        used++;
-
-        char desc[256];
-        snprintf(desc, sizeof(desc), "      %s", EX_DESCS[i]);
-        line_pad(b, desc, cols);
-        used++;
     }
 
-    line_pad(b, "", cols); used++;
-    if (app->status[0]) {
-        char line[1024];
-        snprintf(line, sizeof(line), "  已写出：%s", app->status);
-        line_pad(b, line, cols);
+    if (app->status[0] && used < bodyRows) {
+        card_blank(b, cols); used++;
+        col_fg(b, P_ACCENT);
+        mb_sb_puts(b, "  ✓ 已写出 ");
+        col_fg(b, P_SOFT);
+        mb_sb_puts(b, app->status);
+        col_reset(b);
+        mb_sb_puts(b, "\x1b[K\n");
         used++;
     }
 
@@ -445,9 +558,9 @@ static void draw_body_export(SBuf* b, App* app, Arena* frame, int cols, int body
 static void draw_body_settings(SBuf* b, App* app, int cols, int bodyRows)
 {
     int used = 0;
-    line_pad(b, "", cols); used++;
-    line_pad(b, "  大模型接入设置（保存后按 1 回到预览，用 a 切换到 AI 规划）", cols); used++;
-    line_pad(b, "", cols); used++;
+    card_title(b, "大模型接入", cols); used++;
+    card_kv(b, "提示", "填好地址与模型名后，按 1 回到预览并用 a 切到 AI 规划。", cols); used++;
+    card_blank(b, cols); used++;
 
     for (int i = 0; i < SET_COUNT && used < bodyRows; i++) {
         char value[384];
@@ -460,9 +573,9 @@ static void draw_body_settings(SBuf* b, App* app, int cols, int bodyRows)
             snprintf(value, sizeof(value), "%s", app->cfg.baseUrl);
             break;
         case SET_KEY:
-            if (app->cfg.apiKey[0]) snprintf(value, sizeof(value), "************（已设置，回车可改）");
-            else snprintf(value, sizeof(value), "（未设置）%s",
-                          MB_LLM_PRESETS[app->preset].keyOptional ? " — 该服务可留空" : "");
+            if (app->cfg.apiKey[0]) snprintf(value, sizeof(value), "••••••••  已设置（回车可改）");
+            else snprintf(value, sizeof(value), "未设置%s",
+                          MB_LLM_PRESETS[app->preset].keyOptional ? "  — 该服务可留空" : "");
             break;
         case SET_MODEL:
             snprintf(value, sizeof(value), "%s", app->cfg.model);
@@ -472,27 +585,25 @@ static void draw_body_settings(SBuf* b, App* app, int cols, int bodyRows)
             break;
         case SET_JSON:
             snprintf(value, sizeof(value), "%s   ← → 切换",
-                     app->cfg.jsonMode ? "开启（优先使用 response_format: json_object）" : "关闭");
+                     app->cfg.jsonMode ? "开启" : "关闭");
             break;
         default:
             value[0] = '\0';
         }
 
-        char line[1024];
-        if (i == app->settingsRow) {
-            snprintf(line, sizeof(line), "  \x1b[7m \xe2\x96\xb6 %-10s %-60s \x1b[0m",
-                     SET_NAMES[i], value);
-        } else {
-            snprintf(line, sizeof(line), "    %-10s %-60s", SET_NAMES[i], value);
-        }
-        line_pad(b, line, cols);
+        card_row(b, i == app->settingsRow, SET_NAMES[i], value, cols);
         used++;
     }
 
-    line_pad(b, "", cols); used++;
-    char note[512];
-    snprintf(note, sizeof(note), "  提示：%s", MB_LLM_PRESETS[app->preset].hint);
-    line_pad(b, note, cols); used++;
+    if (used < bodyRows) {
+        card_blank(b, cols); used++;
+        col_fg(b, P_DIM);
+        mb_sb_puts(b, "  ");
+        mb_sb_puts(b, MB_LLM_PRESETS[app->preset].hint);
+        col_reset(b);
+        mb_sb_puts(b, "\x1b[K\n");
+        used++;
+    }
 
     for (; used < bodyRows; used++) mb_sb_puts(b, "\x1b[K\n");
 }
@@ -512,32 +623,62 @@ static void draw(App* app, Arena* frame, int cols, int rows)
     /* --- header ---------------------------------------------------------- */
     {
         const MBBuildResult* r = app->result;
-        char left[256];
-        snprintf(left, sizeof(left), " Minecraft Builder · C 版  ");
-        char right[512];
+        char title[128];
+        snprintf(title, sizeof(title), "  \xe2\x9b\x8f  Minecraft Builder");
+
+        char engine[192];
         if (app->aiEnabled) {
-            snprintf(right, sizeof(right), " 引擎: 大模型 (%s)",
+            snprintf(engine, sizeof(engine), " 大模型 · %s ",
                      app->cfg.model[0] ? app->cfg.model : "未配置");
         } else {
-            snprintf(right, sizeof(right), " 引擎: 本地规则引擎");
+            snprintf(engine, sizeof(engine), " 本地规则引擎 ");
         }
 
-        char mid[512] = "";
+        col_bg(&b, P_CARD);
+        col_fg(&b, P_ACCENT);
+        mb_sb_puts(&b, "\x1b[1m");
+        mb_sb_puts(&b, title);
+        col_fg(&b, P_DIM);
+        mb_sb_puts(&b, "\x1b[22m  ·  C 版");
+
+        int usedW = display_width(title) + display_width("  ·  C 版");
+        int engineW = display_width(engine);
+        for (int i = usedW; i < cols - engineW - 2; i++) mb_sb_putc(&b, ' ');
+
+        if (app->aiEnabled) {
+            col_bg(&b, P_ACCENT2);
+            col_fg(&b, P_INK);
+            mb_sb_puts(&b, "\x1b[1m");
+            mb_sb_puts(&b, engine);
+        } else {
+            col_bg(&b, P_PANEL);
+            col_fg(&b, P_SOFT);
+            mb_sb_puts(&b, engine);
+        }
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K\n");
+
         if (r) {
-            snprintf(mid, sizeof(mid), "%s · %s   %d×%d 占地 · 高 %d · %d 方块",
-                     r->report.scale, r->name, r->size.x, r->size.z,
-                     r->size.y, r->total);
+            char mid[320];
+            snprintf(mid, sizeof(mid), "  %s · %d×%d 占地 · 高 %d · %d 方块",
+                     r->name, r->size.x, r->size.z, r->size.y, r->total);
+            col_bg(&b, P_CARD);
+            col_fg(&b, P_GOLD);
+            mb_sb_puts(&b, mid);
+            int mw = display_width(mid);
+            col_fg(&b, P_DIM);
+            for (int i = mw; i < cols; i++) mb_sb_putc(&b, ' ');
+            col_reset(&b);
+            mb_sb_puts(&b, "\x1b[K\n");
+        } else {
+            col_bg(&b, P_CARD);
+            col_fg(&b, P_DIM);
+            mb_sb_puts(&b, "  ");
+            for (int i = 3; i < cols; i++) mb_sb_putc(&b, ' ');
+            col_reset(&b);
+            mb_sb_puts(&b, "\x1b[K\n");
         }
-
-        mb_sb_puts(&b, "\x1b[0m\x1b[48;2;28;32;42m\x1b[1m");
-        mb_sb_puts(&b, left);
-        mb_sb_puts(&b, "\x1b[22m\x1b[48;2;28;32;42m");
-        mb_sb_puts(&b, mid);
-        mb_sb_puts(&b, "\x1b[0m\x1b[48;2;28;32;42m\x1b[38;2;130;190;255m");
-        mb_sb_puts(&b, right);
-        int w = display_width(left) + display_width(mid) + display_width(right);
-        for (int i = w; i < cols - 1; i++) mb_sb_putc(&b, ' ');
-        mb_sb_puts(&b, "\x1b[0m\x1b[K\n");
+        col_reset(&b);
     }
 
     draw_tabs(&b, app, cols);
@@ -552,31 +693,55 @@ static void draw(App* app, Arena* frame, int cols, int rows)
     }
 
     /* --- status ---------------------------------------------------------- */
+    col_bg(&b, P_CARD);
     if (app->error[0]) {
-        char line[1200];
-        snprintf(line, sizeof(line), " \x1b[38;2;255;110;110m✗ %s", app->error);
-        line_pad(&b, line, cols);
+        col_fg(&b, P_ERR);
+        mb_sb_puts(&b, "  \xe2\x9c\x97 ");
+        mb_sb_puts(&b, app->error);
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K\n");
     } else if (app->status[0]) {
-        char line[1200];
-        snprintf(line, sizeof(line), " \x1b[38;2;120;220;160m✓ %s", app->status);
-        line_pad(&b, line, cols);
+        col_fg(&b, P_ACCENT);
+        mb_sb_puts(&b, "  \xe2\x9c\x93 ");
+        col_fg(&b, P_SOFT);
+        mb_sb_puts(&b, app->status);
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K\n");
     } else if (app->editing) {
-        char line[1200];
-        snprintf(line, sizeof(line), " \x1b[7m提示词\x1b[0m %s\x1b[7m█\x1b[0m", app->prompt);
-        line_pad(&b, line, cols);
+        col_fg(&b, P_ACCENT);
+        mb_sb_puts(&b, "  \xe2\x9c\x8e 提示词  ");
+        col_fg(&b, P_INK);
+        mb_sb_puts(&b, app->prompt);
+        col_fg(&b, P_ACCENT);
+        mb_sb_puts(&b, "\xe2\x96\x88");
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K\n");
     } else {
-        line_pad(&b, "", cols);
+        col_fg(&b, P_DIM);
+        mb_sb_puts(&b, "  就绪");
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K\n");
     }
 
     /* --- hints ----------------------------------------------------------- */
-    if (app->editing) {
-        line_pad(&b, " 输入中：直接打字 · Backspace 删除 · Enter 生成 · Esc 取消", cols);
-    } else if (app->tab == TAB_SETTINGS) {
-        line_pad(&b, " ↑↓ 选择字段 · ←→ 调整 · Enter 编辑/切换 · Tab 切换视图 · q 退出", cols);
-    } else if (app->tab == TAB_EXPORT) {
-        line_pad(&b, " ↑↓ 选择 · Enter 写出文件 · Tab 切换视图 · i 编辑提示词 · q 退出", cols);
-    } else {
-        line_pad(&b, " i 编辑提示词 · Enter 生成 · a AI/本地 · t 测试连接 · g 换变体 · Tab 切换 · ←→↑↓ 视角 · [ ] 层 · - + 缩放 · p 3D 窗口 · q 退出", cols);
+    col_bg(&b, P_CANVAS);
+    {
+        const char* hint;
+        if (app->editing) {
+            hint = " 输入中：直接打字 · Backspace 删除 · Enter 生成 · Esc 取消";
+        } else if (app->tab == TAB_SETTINGS) {
+            hint = " ↑↓ 选择字段 · ←→ 调整 · Enter 编辑/切换 · Tab 切换视图 · q 退出";
+        } else if (app->tab == TAB_EXPORT) {
+            hint = " ↑↓ 选择 · Enter 写出文件 · Tab 切换视图 · i 编辑提示词 · q 退出";
+        } else if (app->tab == TAB_PLAN) {
+            hint = " [ ] 切换楼层 · ←→↑↓ 视角 · - + 缩放 · Tab 切换视图 · i 编辑提示词 · Enter 生成 · q 退出";
+        } else {
+            hint = " i 编辑提示词 · Enter 生成 · a AI/本地 · g 换变体 · t 测试连接 · Tab 切换 · ←→↑↓ 视角 · p 3D 窗口 · q 退出";
+        }
+        col_fg(&b, P_DIM);
+        mb_sb_puts(&b, hint);
+        col_reset(&b);
+        mb_sb_puts(&b, "\x1b[K");
     }
 
     mb_sb_puts(&b, "\x1b[0m");
@@ -905,7 +1070,8 @@ static void cli_usage(void)
     printf(
         "Minecraft Builder — C 版\n"
         "\n"
-        "  mb                    启动终端界面\n"
+        "  mb                    启动桌面图形界面\n"
+        "  mb --tui              启动终端界面\n"
         "  mb --preview [提示词]  直接打开 3D 预览窗口\n"
         "  mb --shot 文件.bmp    离屏渲染一帧并写出 BMP（不需要窗口）\n"
         "  mb --size 1280x720    指定 --shot 的输出尺寸，默认 960x600\n"
@@ -965,6 +1131,7 @@ int main(int argc, char** argv)
     const char* prompt = NULL;
     const char* shot   = NULL;
     bool preview = false;
+    bool tui = false;
     int  shotW = 960, shotH = 600;
     double yawDeg = 0.0, pitchDeg = 0.0, dist = 0.0;
 
@@ -975,6 +1142,8 @@ int main(int argc, char** argv)
             return 0;
         } else if (strcmp(a, "--preview") == 0) {
             preview = true;
+        } else if (strcmp(a, "--tui") == 0) {
+            tui = true;
         } else if (strcmp(a, "--shot") == 0 && i + 1 < argc) {
             shot = argv[++i];
         } else if (strcmp(a, "--yaw") == 0 && i + 1 < argc) {
@@ -1036,6 +1205,8 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    if (!tui) return mb_gui_run(prompt);
+
     /* --- terminal interface ---------------------------------------------- */
     Arena frame, model;
     mb_arena_init(&frame);
@@ -1043,8 +1214,18 @@ int main(int argc, char** argv)
 
     App app;
     memset(&app, 0, sizeof(app));
-    snprintf(app.prompt, sizeof(app.prompt), "%s", DEFAULT_PROMPT);
+    snprintf(app.prompt, sizeof(app.prompt), "%s",
+             prompt && *prompt ? prompt : DEFAULT_PROMPT);
     mb_llm_default_config(&app.cfg);
+    mb_config_load(&app.cfg);
+    app.preset = MB_LLM_PRESET_COUNT - 1;
+    for (int i = 0; i < MB_LLM_PRESET_COUNT; i++) {
+        if (strcmp(app.cfg.baseUrl, MB_LLM_PRESETS[i].baseUrl) == 0
+            && strcmp(app.cfg.model, MB_LLM_PRESETS[i].model) == 0) {
+            app.preset = i;
+            break;
+        }
+    }
     mb_view_default(&app.view);
     app.aiEnabled = false;
     app.tab = TAB_3D;
@@ -1070,6 +1251,7 @@ int main(int argc, char** argv)
         handle_char(&app, key, &model);
     }
 
+    mb_config_save(&app.cfg);
     mb_term_restore();
     mb_arena_destroy(&model);
     mb_arena_destroy(&frame);
