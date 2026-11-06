@@ -182,6 +182,16 @@ static const char* const PANEL_KEYS[][2] = {
 #define PANEL_PAD  14
 #define LINE_H     22
 
+/* Right-hand "scene info" card rhythm. The four live state rows come first,
+ * then the material distribution heading and its bars; the two functions that
+ * paint that card (chrome and text) must agree on these or the bars land on top
+ * of the labels. */
+#define STATUS_STATS_TOP  62
+#define STATUS_STATS_STEP 22
+#define STATUS_CHART_TOP  180
+#define STATUS_CHART_STEP 28
+#define STATUS_BAR_OFFSET 17   /* thin bar sits under the material name */
+
 /* ========================================================================== */
 /* text                                                                       */
 /* ========================================================================== */
@@ -216,6 +226,18 @@ static void text_draw_right(HDC hdc, Arena* a, HFONT font, int x, int y,
     SetBkMode(hdc, TRANSPARENT);
     DrawTextW(hdc, (const WCHAR*)s, (int)n, &rc,
               DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+}
+
+static int text_width(HDC hdc, Arena* a, HFONT font, const char* utf8)
+{
+    size_t n = 0;
+    U16* s = mb_u16_from_utf8(a, utf8, &n);
+    if (!s || n == 0) return 0;
+
+    SelectObject(hdc, font);
+    SIZE size;
+    if (!GetTextExtentPoint32W(hdc, (const WCHAR*)s, (int)n, &size)) return 0;
+    return size.cx;
 }
 
 static HFONT make_font(int px, int weight)
@@ -306,17 +328,17 @@ static void pv_draw_chrome(Preview* p, MBFramebuffer* fb)
         if (r && r->byMaterialCount > 0 && r->total > 0) {
             int chartX = rightX + 14;
             int chartW = rightW - 28;
-            int cy = rightY + 96;
+            int cy = rightY + STATUS_CHART_TOP;
             int maxRows = 6;
             for (int i = 0; i < r->byMaterialCount && i < maxRows; i++) {
                 double frac = (double)r->byMaterial[i].count / (double)r->total;
                 int barW = (int)(frac * (double)chartW + 0.5);
                 if (barW < 3) barW = 3;
                 uint32_t col = mb_material_color(r->byMaterial[i].id);
-                int y = cy + i * 20;
-                if (y + 16 > rightY + rightH - 12) break;
-                blend_rect(fb, chartX, y + 4, chartW, 8, line, 0.55);
-                fill_round(fb, chartX, y + 4, barW, 8, 4, col, 0.95);
+                int y = cy + i * STATUS_CHART_STEP;
+                if (y + STATUS_CHART_STEP > rightY + rightH - 12) break;
+                blend_rect(fb, chartX, y + STATUS_BAR_OFFSET, chartW, 4, line, 0.55);
+                fill_round(fb, chartX, y + STATUS_BAR_OFFSET, barW, 4, 2, col, 0.95);
             }
         }
     }
@@ -414,8 +436,8 @@ static void pv_draw_text(Preview* p, HDC hdc)
         text_draw(hdc, a, fSmall, rightX + 16, rightY + 36, "实时状态", dim);
 
         char buf[160];
-        int ly = rightY + 62;
-        const int step = 22;
+        int ly = rightY + STATUS_STATS_TOP;
+        const int step = STATUS_STATS_STEP;
 
         snprintf(buf, sizeof buf, "%.1f", p->dist);
         text_draw(hdc, a, fSmall, rightX + 16, ly, "相机距离", dim);
@@ -440,13 +462,14 @@ static void pv_draw_text(Preview* p, HDC hdc)
                         p->opt.autoOrbit ? accent : dim);
 
         /* material distribution heading sits just above the bars */
-        text_draw(hdc, a, fSmall, rightX + 16, rightY + 78, "材质占比", dim);
+        text_draw(hdc, a, fSmall, rightX + 16, rightY + STATUS_CHART_TOP - 22,
+                  "材质占比", dim);
 
         if (r && r->byMaterialCount > 0 && r->total > 0) {
-            int cy = rightY + 96;
+            int cy = rightY + STATUS_CHART_TOP;
             for (int i = 0; i < r->byMaterialCount && i < 6; i++) {
-                int y = cy + i * 20;
-                if (y + 16 > rightY + (h - rightY - 64) - 12) break;
+                int y = cy + i * STATUS_CHART_STEP;
+                if (y + STATUS_CHART_STEP > rightY + (h - rightY - 64) - 12) break;
                 const char* nm = mb_material_name(r->byMaterial[i].id);
                 double pct = 100.0 * (double)r->byMaterial[i].count / (double)r->total;
                 char val[48];
@@ -455,7 +478,8 @@ static void pv_draw_text(Preview* p, HDC hdc)
                 text_draw_right(hdc, a, fMono, rightX + 16, y, rightW - 32, 16, val, dim);
             }
         } else {
-            text_draw(hdc, a, fSmall, rightX + 16, rightY + 96, "暂无数据", dim);
+            text_draw(hdc, a, fSmall, rightX + 16, rightY + STATUS_CHART_TOP,
+                      "暂无数据", dim);
         }
     }
 
@@ -463,15 +487,21 @@ static void pv_draw_text(Preview* p, HDC hdc)
     int sh = 40;
     int by = h - sh + 11;
 
+    /* Leave the material swatch strip its own space; text starts after it. */
+    int swatches = 0;
+    if (r) swatches = r->byMaterialCount > 7 ? 7 : r->byMaterialCount;
+    int coordX = 16 + swatches * 16 + (swatches ? 4 : 0);
+
     char coord[128];
     snprintf(coord, sizeof coord, "视角 X %.0f  Y %.0f  Z %.0f",
              p->pivotX, p->pivotY, p->pivotZ);
-    text_draw(hdc, a, fSmall, 16, by, coord, soft);
+    text_draw(hdc, a, fSmall, coordX, by, coord, soft);
 
     if (r && r->byMaterialCount > 7) {
         char more[32];
         snprintf(more, sizeof more, "+%d", r->byMaterialCount - 7);
-        text_draw(hdc, a, fSmall, 16 + 7 * 16 + 2, by, more, dim);
+        int coordW = text_width(hdc, a, fSmall, coord);
+        text_draw(hdc, a, fSmall, coordX + coordW + 8, by, more, dim);
     }
 
     /* toggles legend on the far right, next to the two chips */
