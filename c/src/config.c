@@ -23,6 +23,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <windows.h>
 #define MB_MKDIR(path) _mkdir(path)
 #else
 #include <sys/stat.h>
@@ -31,32 +32,72 @@
 #endif
 
 #define CONFIG_LINE_MAX 1024
+#define CONFIG_FILE "settings.ini"
 
 /* ========================================================================== */
 /* path                                                                       */
 /* ========================================================================== */
+/*
+ * The settings file is looked up in a short list of locations, in order.  The
+ * per-user profile is the right place on a normal machine, but locked-down
+ * Windows installations and some endpoint-security suites reject writes there
+ * for unsigned executables (fopen reports EACCES).  Rather than silently
+ * failing to save the API key, fall back to the executable's own folder and
+ * finally the working directory.  Load and save walk the same list, so a
+ * settings file in any of those locations is picked up.
+ */
+static bool config_candidate(int index, char* out, size_t cap)
+{
+    if (!out || cap < 32) return false;
+
+#ifdef _WIN32
+    if (index == 0 || index == 1) {
+        const char* base = getenv(index == 0 ? "APPDATA" : "LOCALAPPDATA");
+        if (!base || !*base) return false;
+        int n = snprintf(out, cap, "%s\\MinecraftBuilder\\" CONFIG_FILE, base);
+        return n > 0 && (size_t)n < cap;
+    }
+    if (index == 2) {
+        char exe[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+        if (n == 0 || n >= sizeof(exe)) return false;
+        char* slash = strrchr(exe, '\\');
+        if (!slash) return false;
+        *slash = '\0';
+        int len = snprintf(out, cap, "%s\\" CONFIG_FILE, exe);
+        return len > 0 && (size_t)len < cap;
+    }
+    if (index == 3) {
+        int n = snprintf(out, cap, "%s", CONFIG_FILE);
+        return n > 0 && (size_t)n < cap;
+    }
+#else
+    if (index == 0) {
+        const char* base = getenv("XDG_CONFIG_HOME");
+        if (base && *base) {
+            int n = snprintf(out, cap, "%s/minecraft-builder/" CONFIG_FILE, base);
+            return n > 0 && (size_t)n < cap;
+        }
+        base = getenv("HOME");
+        if (!base || !*base) return false;
+        int n = snprintf(out, cap, "%s/.config/minecraft-builder/" CONFIG_FILE, base);
+        return n > 0 && (size_t)n < cap;
+    }
+    if (index == 3) {
+        int n = snprintf(out, cap, "%s", CONFIG_FILE);
+        return n > 0 && (size_t)n < cap;
+    }
+#endif
+
+    return false;
+}
 
 bool mb_config_path(char* out, size_t cap)
 {
-    if (!out || cap < 16) return false;
-
-#ifdef _WIN32
-    const char* base = getenv("APPDATA");
-    if (!base || !*base) base = getenv("USERPROFILE");
-    if (!base || !*base) return false;
-    int n = snprintf(out, cap, "%s\\MinecraftBuilder\\settings.ini", base);
-#else
-    const char* base = getenv("XDG_CONFIG_HOME");
-    if (base && *base) {
-        int n = snprintf(out, cap, "%s/minecraft-builder/settings.ini", base);
-        return n > 0 && (size_t)n < cap;
+    for (int i = 0; i < 4; i++) {
+        if (config_candidate(i, out, cap)) return true;
     }
-    base = getenv("HOME");
-    if (!base || !*base) return false;
-    int n = snprintf(out, cap, "%s/.config/minecraft-builder/settings.ini", base);
-#endif
-
-    return n > 0 && (size_t)n < cap;
+    return false;
 }
 
 /* Create every missing parent directory of `path`.  Failure is not fatal: the
@@ -163,8 +204,11 @@ bool mb_config_save_file(const char* path, const MBLlmConfig* cfg)
 bool mb_config_save(const MBLlmConfig* cfg)
 {
     char path[512];
-    if (!mb_config_path(path, sizeof(path))) return false;
-    return mb_config_save_file(path, cfg);
+    for (int i = 0; i < 4; i++) {
+        if (!config_candidate(i, path, sizeof(path))) continue;
+        if (mb_config_save_file(path, cfg)) return true;
+    }
+    return false;
 }
 
 /* ========================================================================== */
@@ -226,6 +270,9 @@ bool mb_config_load_file(const char* path, MBLlmConfig* cfg)
 bool mb_config_load(MBLlmConfig* cfg)
 {
     char path[512];
-    if (!mb_config_path(path, sizeof(path))) return false;
-    return mb_config_load_file(path, cfg);
+    for (int i = 0; i < 4; i++) {
+        if (!config_candidate(i, path, sizeof(path))) continue;
+        if (mb_config_load_file(path, cfg)) return true;
+    }
+    return false;
 }

@@ -101,6 +101,7 @@ mingw32-make clean       # 清掉 build/
 - 顶部页签切换 3D 预览、楼层图、生成报告、导出文件和模型设置。
 - 模型设置支持服务预设、Base URL、API Key、模型名、温度、JSON 模式与连接测试；Base URL 和 API Key 可用 `Ctrl+V` 直接粘贴。
 - 设置点「保存设置」立即写入，退出窗口时也会自动保存到本机配置文件，下次启动继续生效。
+- 配置文件优先放在 `%APPDATA%\MinecraftBuilder\settings.ini`；如果该位置不可写（受限账户或安全软件会拒绝未签名程序写用户目录），会自动回退到程序目录下的 `settings.ini`。
 - 中文界面字体优先使用系统 DengXian，缺失时依次回退到 Microsoft YaHei / SimHei / SimSun；界面上新出现的文字（包括模型返回的名字与备注）会自动补齐字形。
 
 ## 可选终端 TUI 操作
@@ -194,7 +195,7 @@ mb --shot build/close.bmp --size 900x600 --yaw 30 --pitch -18 --dist 11 --prompt
 
 填完点「测试连接」可以先确认通不通（会调 `/models` 列出可用模型并核对你要用的那个在不在），再切回预览页打开「AI 规划」。TUI 里的对应按键是 `t` 测试、`a` 切换。
 
-这些设置保存在 `%APPDATA%\MinecraftBuilder\settings.ini`（Linux/macOS 为 `~/.config/minecraft-builder/settings.ini`），GUI 和 TUI 共用同一份文件：窗口关闭或终端退出时自动写入，下次启动自动读回。
+这些设置优先保存在 `%APPDATA%\MinecraftBuilder\settings.ini`（Linux/macOS 为 `~/.config/minecraft-builder/settings.ini`）。如果用户目录不可写（受限账户、安全软件拦截未签名程序写用户目录时常见），会自动回退到程序所在目录的 `settings.ini`；GUI 和 TUI 共用同一份文件：窗口关闭或终端退出时自动写入，下次启动自动读回。
 
 Ollama 预设的 API Key 可以留空；本地跑之前需要放开跨域：
 
@@ -509,7 +510,7 @@ A **C11 desktop application**: prompt → voxel model → Raylib/Raygui workbenc
 - **Stack**: C11, vendored Raylib 6.2 and Raygui 5.1-dev for the desktop UI, plus Windows `winhttp` (with a `curl.exe` fallback). JSON parsing and HTTP handling remain implemented in C.
 - **Real LLM integration.** Any OpenAI-compatible endpoint (DeepSeek / OpenAI / Kimi / GLM / Qwen / local Ollama) — the model returns a *structured build intent* (template, style, dimensions, palette, name), and the deterministic parametric builders compute every block coordinate. A hallucinating model can only pick the wrong template; it can never emit an unbuildable structure. Every id the model returns is re-validated against the real catalog: unknown block names are dropped, out-of-range dimensions clamped, unknown templates fall back.
 - **Offline fallback.** Turn AI mode off and it runs as a deterministic local rule engine — no network, no key, no cost.
-- **Persistent settings.** Endpoint, API key, model and sampling knobs are stored in `%APPDATA%\MinecraftBuilder\settings.ini` and shared by the desktop and terminal front ends.
+- **Persistent settings.** Endpoint, API key, model and sampling knobs are stored in `%APPDATA%\MinecraftBuilder\settings.ini` (falling back to `settings.ini` next to the executable when the profile is not writable) and shared by the desktop and terminal front ends.
 - **Reproducible**: seeded RNG, same prompt + same seed = identical output.
 - **277-check regression suite** that pins the exact block counts per template/style, terminal text-width behavior, and the settings round-trip.
 - **Supports Chinese keywords** for structure type, dimensions (`15x11`, `宽20 深12`), floor count and block materials.
