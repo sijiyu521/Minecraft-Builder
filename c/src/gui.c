@@ -1017,7 +1017,9 @@ int mb_gui_run(const char* initialPrompt)
         mb_arena_destroy(&app.model);
         return 1;
     }
-    SetWindowMinSize(1040, 640);
+    /* The settings card is laid out on a fixed vertical rhythm; 700 keeps the
+     * save/test row inside the window even at the smallest allowed size. */
+    SetWindowMinSize(1040, 700);
     SetTargetFPS(60);
     gui_style();
     for (int cp = 32; cp <= 126; cp++) app.fontCodepoints[app.fontCodepointCount++] = cp;
