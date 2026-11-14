@@ -182,9 +182,11 @@ void mb_camera_default(MBCamera* c, const MBBuildResult* r)
 {
     memset(c, 0, sizeof(*c));
     /* Lights and doors are authored on the +X/+Z faces; this yaw keeps those
-     * sunlit faces toward the viewer, with a three-quarter view of the roof. */
-    c->yaw   = 3.7616;    /* about 215 degrees, looking at +X/+Z */
-    c->pitch = -0.40;     /* looking down at the roof */
+     * sunlit faces toward the viewer, with a symmetric three-quarter view
+     * (225 degrees) so neither facade is skewed more than the other. Use the
+     * GUI's "正视" button for a straight-on front elevation. */
+    c->yaw   = 3.9269908; /* 225 degrees, looking at +X/+Z */
+    c->pitch = -0.35;     /* looking down at the roof */
     c->fov   = 0.90;
     mb_camera_frame(c, r);
 }

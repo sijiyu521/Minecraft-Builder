@@ -460,6 +460,24 @@ static void frame_camera(GuiApp* app)
     app->sceneDirty = true;
 }
 
+/* Snap to a named view without changing the orbit distance. Kept separate from
+ * frame_camera so the "正视" button does not fall back to the default angle. */
+static void snap_camera(GuiApp* app, double yaw, double pitch)
+{
+    if (!app->result) return;
+    app->camera.yaw = yaw;
+    app->camera.pitch = pitch;
+    mb_camera_frame(&app->camera, app->result);
+    app->pivotX = app->result->size.x * 0.5;
+    app->pivotY = app->result->size.y * 0.5;
+    app->pivotZ = app->result->size.z * 0.5;
+    double dx = app->pivotX - app->camera.x;
+    double dy = app->pivotY - app->camera.y;
+    double dz = app->pivotZ - app->camera.z;
+    app->distance = sqrt(dx * dx + dy * dy + dz * dz);
+    app->sceneDirty = true;
+}
+
 /* A configured endpoint is now mandatory: generation is model-driven only.
  * Checking here turns a first-run HTTP 401 into an actionable message. */
 static bool model_config_ready(GuiApp* app)
@@ -710,7 +728,9 @@ static Rectangle draw_sidebar(GuiApp* app, int height)
     DrawLineEx((Vector2){ panel.x + 16, keyY }, (Vector2){ panel.x + panel.width - 16, keyY }, 1, UI_BORDER);
     draw_text("快捷操作", panel.x + 17, keyY + 14, 13, UI_MUTED);
     draw_text("Enter 生成   Esc 取消输入", panel.x + 17, keyY + 38, 13, UI_SOFT);
-    draw_text("拖动预览旋转 · 滚轮缩放", panel.x + 17, keyY + 62, 13, UI_SOFT);
+    draw_text("拖动预览旋转 · 滚轮缩放", panel.x + 17, keyY + 60, 13, UI_SOFT);
+    draw_text("F 正视 · R 重置视角", panel.x + 17, keyY + 82, 13, UI_SOFT);
+    draw_text("编辑框内 ↑↓←→ / Tab 切换", panel.x + 17, keyY + 104, 13, UI_SOFT);
 
     float statusY = panel.y + panel.height - 74;
     Color statusBg = app->statusIsError ? (Color){ 67, 38, 43, 255 } : UI_RAISED;
@@ -855,16 +875,19 @@ static void draw_preview(GuiApp* app, Rectangle bounds)
         }
     }
 
-    Rectangle controls = { bounds.x + 18, bounds.y + bounds.height - 38, 74, 26 };
+    Rectangle controls = { bounds.x + 18, bounds.y + bounds.height - 38, 56, 26 };
     if (GuiToggle(controls, "网格", &app->scene.showGrid)) app->sceneDirty = true;
-    controls.x += 80;
-    controls.width = 88;
+    controls.x += 61;
+    controls.width = 70;
     if (GuiToggle(controls, "坐标轴", &app->scene.showAxes)) app->sceneDirty = true;
-    controls.x += 94;
-    controls.width = 98;
+    controls.x += 75;
+    controls.width = 84;
     if (GuiToggle(controls, "自动环绕", &app->scene.autoOrbit)) app->sceneDirty = true;
-    controls.x += 104;
-    controls.width = 82;
+    controls.x += 89;
+    controls.width = 58;
+    if (GuiButton(controls, "正视")) snap_camera(app, 3.14159265358979323846, -0.12);
+    controls.x += 63;
+    controls.width = 78;
     if (GuiButton(controls, "重置视角")) frame_camera(app);
     if (app->scene.autoOrbit) {
         app->camera.yaw += GetFrameTime() * 0.25;
@@ -1042,6 +1065,26 @@ static void draw_right_panel(GuiApp* app, int width, int height)
     if (app->tab == GUI_VIEW_3D || app->tab == GUI_VIEW_PLAN) draw_materials(app, panel);
 }
 
+/* Arrow keys / Tab move focus between the editable fields instead of rotating
+ * the camera while the user is typing. The prompt lives in the sidebar, the
+ * three model fields live on the settings page, so focusing one of those also
+ * switches to that page. */
+static const GuiField FIELD_CYCLE[] = {
+    FIELD_PROMPT, FIELD_URL, FIELD_MODEL, FIELD_KEY
+};
+
+static void cycle_field(GuiApp* app, int delta)
+{
+    const int n = (int)(sizeof(FIELD_CYCLE) / sizeof(FIELD_CYCLE[0]));
+    int idx = 0;
+    for (int i = 0; i < n; i++) {
+        if (FIELD_CYCLE[i] == app->field) { idx = i; break; }
+    }
+    idx = (idx + delta % n + n) % n;
+    app->field = FIELD_CYCLE[idx];
+    if (app->field != FIELD_PROMPT) app->tab = GUI_VIEW_SETTINGS;
+}
+
 static void add_key_input(GuiApp* app)
 {
     if (!app->inputReady) return;
@@ -1051,7 +1094,20 @@ static void add_key_input(GuiApp* app)
         regenerate(app);
     } else if (IsKeyPressed(KEY_ESCAPE)) {
         app->field = FIELD_NONE;
+    } else if (app->field != FIELD_NONE) {
+        bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (IsKeyPressed(KEY_TAB)) {
+            cycle_field(app, shift ? -1 : 1);
+        } else if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_RIGHT)) {
+            cycle_field(app, 1);
+        } else if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_LEFT)) {
+            cycle_field(app, -1);
+        }
+    } else if (IsKeyPressed(KEY_TAB)) {
+        app->field = FIELD_PROMPT;   /* keyboard-only way into the form */
     } else if (app->tab == GUI_VIEW_3D) {
+        if (IsKeyPressed(KEY_F)) snap_camera(app, 3.14159265358979323846, -0.12);
+        if (IsKeyPressed(KEY_R)) frame_camera(app);
         if (IsKeyPressed(KEY_LEFT)) { app->camera.yaw -= 0.12; camera_from_orbit(app); app->sceneDirty = true; }
         if (IsKeyPressed(KEY_RIGHT)) { app->camera.yaw += 0.12; camera_from_orbit(app); app->sceneDirty = true; }
         if (IsKeyPressed(KEY_UP)) { app->camera.pitch += 0.06; camera_from_orbit(app); app->sceneDirty = true; }
