@@ -342,3 +342,126 @@ bool mb_http_do(Arena* a, const char* method, const char* url,
     }
     return false;
 }
+
+/* ========================================================================== */
+/* file download (launcher)                                                   */
+/* ========================================================================== */
+
+#ifdef _WIN32
+static bool download_via_winhttp(const char* url, const char* destPath,
+                                 char* err, size_t errCap)
+{
+    ParsedUrl u = parse_url(url);
+    if (!u.valid) {
+        snprintf(err, errCap, "无效的下载地址: %s", url);
+        return false;
+    }
+
+    bool ok = false;
+    wchar_t* whost = widen(u.host);
+    wchar_t* wpath = widen(u.path);
+    wchar_t* wverb = widen("GET");
+    wchar_t wdest[1024];
+    if (!whost || !wpath || !wverb) goto done;
+    if (!MultiByteToWideChar(CP_UTF8, 0, destPath, -1, wdest,
+                             (int)(sizeof(wdest) / sizeof(wdest[0])))) {
+        snprintf(err, errCap, "下载路径无法转换: %s", destPath);
+        goto done;
+    }
+
+    HINTERNET session = WinHttpOpen(L"Minecraft-Builder/1.1 (launcher)",
+                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        session = WinHttpOpen(L"Minecraft-Builder/1.1 (launcher)",
+                              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (!session) {
+        snprintf(err, errCap, "无法初始化 WinHTTP");
+        goto done;
+    }
+    WinHttpSetTimeouts(session, 15000, 20000, 60000, 0);
+
+    HINTERNET conn = WinHttpConnect(session, whost, (INTERNET_PORT)u.port, 0);
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, wverb, wpath, NULL,
+                                              WINHTTP_NO_REFERER,
+                                              WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                              u.secure ? WINHTTP_FLAG_SECURE : 0)
+                         : NULL;
+    if (!req) {
+        snprintf(err, errCap, "无法连接下载服务器");
+        goto close_session;
+    }
+    if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+        || !WinHttpReceiveResponse(req, NULL)) {
+        snprintf(err, errCap, "下载请求失败: %s", u.host);
+        goto close_req;
+    }
+
+    DWORD status = 0;
+    DWORD size = sizeof(status);
+    if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
+                             WINHTTP_NO_HEADER_INDEX)
+        || status != 200) {
+        snprintf(err, errCap, "下载失败（HTTP %lu）: %s", (unsigned long)status, url);
+        goto close_req;
+    }
+
+    FILE* f = _wfopen(wdest, L"wb");
+    if (!f) {
+        snprintf(err, errCap, "无法写入文件: %s", destPath);
+        goto close_req;
+    }
+
+    bool writeOk = true;
+    DWORD avail = 0;
+    while (WinHttpQueryDataAvailable(req, &avail) && avail > 0) {
+        char buf[65536];
+        DWORD got = 0;
+        DWORD want = avail > sizeof(buf) ? (DWORD)sizeof(buf) : avail;
+        if (!WinHttpReadData(req, buf, want, &got) || got == 0) { writeOk = false; break; }
+        if (fwrite(buf, 1, got, f) != got) { writeOk = false; break; }
+    }
+    fclose(f);
+    if (!writeOk) {
+        DeleteFileW(wdest);
+        snprintf(err, errCap, "下载中断: %s", url);
+        goto close_req;
+    }
+    ok = true;
+
+close_req:
+    WinHttpCloseHandle(req);
+close_session:
+    WinHttpCloseHandle(conn);
+    WinHttpCloseHandle(session);
+done:
+    free(whost); free(wpath); free(wverb);
+    return ok;
+}
+#endif
+
+bool mb_http_download(const char* url, const char* destPath, char* err, size_t errCap)
+{
+    if (err && errCap) err[0] = '\0';
+    if (!url || !destPath) {
+        if (err && errCap) snprintf(err, errCap, "下载参数为空");
+        return false;
+    }
+
+#ifdef _WIN32
+    if (download_via_winhttp(url, destPath, err, errCap)) return true;
+
+    /* Same fallback story as mb_http_do: curl.exe ships with Windows. */
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "curl.exe -sS -L --fail -m 900 -o \"%s\" \"%s\" 2>nul", destPath, url);
+    if (system(cmd) == 0) return true;
+#endif
+
+    if (err && errCap) snprintf(err, errCap, "下载失败: %s", url);
+    return false;
+}

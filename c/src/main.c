@@ -14,6 +14,7 @@
  * prompt without a forest of modifier keys.
  */
 #include "mb.h"
+#include "launcher.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -1109,6 +1110,11 @@ static void cli_usage(void)
         "  mb --preview [提示词]  调用模型规划并打开 3D 预览窗口\n"
         "  mb --shot 文件.bmp    调用模型规划、离屏渲染一帧并写出 BMP\n"
         "  mb --textures 目录    使用本机 Minecraft 原版方块材质（16x16 PNG 目录或资源包）\n"
+        "  mb --install 版本     下载并安装一个 Minecraft 版本（例如 1.20.1）\n"
+        "  mb --launch 版本      离线启动已安装的版本（配合 --name / --memory）\n"
+        "  mb --name 玩家名      离线启动使用的玩家名，默认 Steve\n"
+        "  mb --memory 4096      启动内存（MB），默认 2048\n"
+        "  mb --game-dir 目录    指定 .minecraft 目录，默认 %APPDATA%\\.minecraft\n"
         "  mb --size 1280x720    指定 --shot 的输出尺寸，默认 960x600\n"
         "  mb --yaw 45           覆盖相机水平角（度，仅对 --shot 有效）\n"
         "  mb --pitch -28        覆盖相机俯仰角（度，仅对 --shot 有效）\n"
@@ -1120,6 +1126,22 @@ static void cli_usage(void)
         "\n"
         "提示词也可以直接写在命令行上，例如：\n"
         "  mb --preview 帮我建一座海岛小屋\n");
+}
+
+/*
+ * Console progress for `--install`. One line, rewritten in place; the item is
+ * truncated so a long maven coordinate cannot wrap the terminal.
+ */
+static void cli_launcher_progress(void* user, const char* stage,
+                                  int done, int total, const char* item)
+{
+    (void)user;
+    if (total > 0) {
+        printf("\r%-16s %d/%d  %-48.48s", stage, done, total, item ? item : "");
+    } else {
+        printf("\r%-16s %-60.60s", stage, item ? item : "");
+    }
+    fflush(stdout);
 }
 
 /*
@@ -1214,6 +1236,11 @@ int main(int argc, char** argv)
     const char* prompt = NULL;
     const char* shot   = NULL;
     const char* textures = NULL;
+    const char* mcInstall = NULL;
+    const char* mcLaunch = NULL;
+    const char* mcName = "Steve";
+    const char* gameDirArg = NULL;
+    int  mcMemory = 2048;
     bool preview = false;
     bool tui = false;
     int  shotW = 960, shotH = 600;
@@ -1246,9 +1273,52 @@ int main(int argc, char** argv)
             prompt = argv[++i];
         } else if (strcmp(a, "--textures") == 0 && i + 1 < argc) {
             textures = argv[++i];
+        } else if (strcmp(a, "--install") == 0 && i + 1 < argc) {
+            mcInstall = argv[++i];
+        } else if (strcmp(a, "--launch") == 0 && i + 1 < argc) {
+            mcLaunch = argv[++i];
+        } else if (strcmp(a, "--name") == 0 && i + 1 < argc) {
+            mcName = argv[++i];
+        } else if (strcmp(a, "--memory") == 0 && i + 1 < argc) {
+            mcMemory = atoi(argv[++i]);
+            if (mcMemory < 512) mcMemory = 512;
+        } else if (strcmp(a, "--game-dir") == 0 && i + 1 < argc) {
+            gameDirArg = argv[++i];
         } else if (a[0] != '-') {
             prompt = a;      /* a bare argument is the prompt */
         }
+    }
+
+    if (mcInstall || mcLaunch) {
+        char gameDir[512];
+        if (gameDirArg) snprintf(gameDir, sizeof(gameDir), "%s", gameDirArg);
+        else mb_launcher_default_game_dir(gameDir, sizeof(gameDir));
+        Arena arena;
+        mb_arena_init(&arena);
+        char err[512];
+        if (mcInstall) {
+            printf("安装 Minecraft %s 到 %s\n", mcInstall, gameDir);
+            bool ok = mb_launcher_install(&arena, gameDir, mcInstall,
+                                          cli_launcher_progress, NULL, err, sizeof(err));
+            printf("\n%s\n", ok ? "安装完成。" : err);
+            if (!ok) { mb_arena_destroy(&arena); return 1; }
+        }
+        if (mcLaunch) {
+            MBLaunchOptions opt;
+            memset(&opt, 0, sizeof(opt));
+            snprintf(opt.gameDir, sizeof(opt.gameDir), "%s", gameDir);
+            snprintf(opt.versionId, sizeof(opt.versionId), "%s", mcLaunch);
+            snprintf(opt.playerName, sizeof(opt.playerName), "%s", mcName);
+            opt.memoryMb = mcMemory;
+            if (!mb_launcher_launch(&arena, &opt, err, sizeof(err))) {
+                fprintf(stderr, "启动失败: %s\n", err);
+                mb_arena_destroy(&arena);
+                return 1;
+            }
+            printf("已启动 Minecraft %s（离线账号 %s）\n", mcLaunch, mcName);
+        }
+        mb_arena_destroy(&arena);
+        return 0;
     }
 
     if (textures) {

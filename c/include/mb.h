@@ -527,6 +527,10 @@ typedef struct {
 
 bool mb_http_do(Arena* a, const char* method, const char* url,
                 const MBHttpRequest* req, MBHttpResponse* out);
+/* Stream a GET response into a file (used by the launcher). The parent
+ * directory must already exist. Returns false and fills err on failure. */
+bool mb_http_download(const char* url, const char* destPath,
+                      char* err, size_t errCap);
 /* "https://api.deepseek.com/v1" -> "api.deepseek.com" */
 char* mb_url_host(Arena* a, const char* url);
 /* Join a base URL and a path, collapsing duplicate slashes. */
